@@ -75,13 +75,6 @@ else:
     PAYDUNYA_TOKEN = PAYDUNYA_TEST_TOKEN
 
 FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "http://localhost:5173")
-
-
-def get_frontend_origins() -> list[str]:
-    """Origines CORS (FRONTEND_ORIGIN peut contenir plusieurs URLs séparées par des virgules)."""
-    raw = os.getenv("FRONTEND_ORIGINS") or FRONTEND_ORIGIN
-    origins = [o.strip().rstrip("/") for o in raw.split(",") if o.strip()]
-    return origins or ["http://localhost:5173"]
 BACKEND_PUBLIC_URL = os.getenv("BACKEND_PUBLIC_URL", "http://127.0.0.1:8000")
 
 CURSOR_API_KEY = os.getenv("CURSOR_API_KEY", "")

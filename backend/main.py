@@ -5,7 +5,7 @@ from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 
-from config import get_frontend_origins
+from config import FRONTEND_ORIGIN
 from routers.tasks import router as tasks_router
 from services.storage import recover_interrupted_tasks
 from services.transformation_report import render_home_page
@@ -34,7 +34,7 @@ app = FastAPI(
 origins = list(
     dict.fromkeys(
         [
-            *get_frontend_origins(),
+            FRONTEND_ORIGIN.rstrip("/"),
             "http://localhost:5173",
             "http://127.0.0.1:5173",
         ]

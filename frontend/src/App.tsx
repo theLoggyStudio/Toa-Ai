@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  API_BASE,
   getAppConfig,
   getTask,
   initCheckout,
@@ -91,7 +90,7 @@ function App() {
           msg.includes('NetworkError')
         ) {
           setError(
-            `Backend injoignable. Vérifiez que le serveur tourne sur ${API_BASE}`,
+            'Backend injoignable. Vérifiez que le serveur tourne sur http://127.0.0.1:8000',
           );
         }
         stopPolling();

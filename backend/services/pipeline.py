@@ -16,6 +16,11 @@ from services.chibie_commentary import (
     generate_debrief_commentary,
     generate_page_commentary,
 )
+from services.chibie_scan_research import (
+    ChibieScanContext,
+    research_initial_scan_context,
+    research_page_from_blocks,
+)
 from services.chibie_panel import append_chibie_footer, render_debrief_page
 from services.pdf_compiler import compile_pdf
 from services.storage import get_upload_dir, update_task
@@ -27,6 +32,9 @@ from services.transformation_report import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Réactions Toa (bandeau + debrief) uniquement à partir de ce nombre de pages.
+MIN_PAGES_FOR_TOA = 3
 
 
 def _set_progress(task_id: str, percent: int, message: str) -> None:
@@ -96,6 +104,16 @@ def _run_pipeline(
         )
     _set_progress(task_id, 8, "Préparation terminée")
 
+    include_toa = total >= MIN_PAGES_FOR_TOA
+    chibie_scan_ctx = ChibieScanContext()
+    if include_toa:
+        _set_progress(task_id, 9, "Toa repère la série sur les scans…")
+        chibie_scan_ctx = research_initial_scan_context(
+            image_paths,
+            session_id=task_id,
+            max_pages=min(3, total),
+        )
+
     processed_images: list[Path] = []
     total_translated_bubbles = 0
     effective_source = normalize_lang_code(source_language)
@@ -159,46 +177,60 @@ def _run_pipeline(
             image_path, blocks, out_path, target_language
         )
 
-        _set_progress(
-            task_id,
-            base_pct + 14,
-            f"Page {page_num}/{total} — avis du Chibie…",
-        )
-        mood, chibie_comment = generate_page_commentary(
-            page_index=page_idx,
-            total_pages=total,
-            blocks=blocks,
+        if include_toa:
+            chibie_scan_ctx = research_page_from_blocks(
+                chibie_scan_ctx,
+                page_index=page_idx,
+                blocks=blocks,
+                session_id=task_id,
+            )
+            _set_progress(
+                task_id,
+                base_pct + 14,
+                f"Page {page_num}/{total} — avis de Toa…",
+            )
+            mood, chibie_comment = generate_page_commentary(
+                page_index=page_idx,
+                total_pages=total,
+                blocks=blocks,
+                story_so_far=story_so_far,
+                target_language=target_language,
+                session_id=task_id,
+                scan_context=chibie_scan_ctx,
+            )
+            story_so_far.append(build_page_digest(page_idx, blocks))
+
+            final_page_path = processed_dir / f"page_{page_idx:04d}_final.png"
+            append_chibie_footer(
+                out_path,
+                final_page_path,
+                mood=mood,
+                comment=chibie_comment,
+            )
+            with Image.open(final_page_path) as fin:
+                page_width = max(page_width, fin.size[0])
+            processed_images.append(final_page_path)
+        else:
+            with Image.open(out_path) as fin:
+                page_width = max(page_width, fin.size[0])
+            processed_images.append(out_path)
+
+    if include_toa:
+        _set_progress(task_id, 90, "Debrief de Toa…")
+        debrief_mood, debrief_text = generate_debrief_commentary(
             story_so_far=story_so_far,
             target_language=target_language,
             session_id=task_id,
+            scan_context=chibie_scan_ctx,
         )
-        story_so_far.append(build_page_digest(page_idx, blocks))
-
-        final_page_path = processed_dir / f"page_{page_idx:04d}_final.png"
-        append_chibie_footer(
-            out_path,
-            final_page_path,
-            mood=mood,
-            comment=chibie_comment,
+        debrief_path = processed_dir / "page_toa_debrief.png"
+        render_debrief_page(
+            debrief_path,
+            width=page_width or 900,
+            mood=debrief_mood,
+            comment=debrief_text,
         )
-        with Image.open(final_page_path) as fin:
-            page_width = max(page_width, fin.size[0])
-        processed_images.append(final_page_path)
-
-    _set_progress(task_id, 90, "Debrief du Chibie…")
-    debrief_mood, debrief_text = generate_debrief_commentary(
-        story_so_far=story_so_far,
-        target_language=target_language,
-        session_id=task_id,
-    )
-    debrief_path = processed_dir / "page_chibie_debrief.png"
-    render_debrief_page(
-        debrief_path,
-        width=page_width or 900,
-        mood=debrief_mood,
-        comment=debrief_text,
-    )
-    processed_images.append(debrief_path)
+        processed_images.append(debrief_path)
 
     _set_progress(task_id, 92, "Génération du PDF…")
     pdf_path = OUTPUT_DIR / f"{task_id}.pdf"

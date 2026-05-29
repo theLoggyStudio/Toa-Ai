@@ -1,0 +1,18 @@
+{
+  "name": "toa-ai",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Traducteur automatique de mangas/manhwas — monorepo Toa AI",
+  "scripts": {
+    "start": "concurrently \"npm run dev --prefix frontend\" \"npm run backend\"",
+    "dev:frontend": "npm run dev --prefix frontend",
+    "dev:backend": "npm run backend",
+    "backend": "cd backend && .\\venv\\Scripts\\python.exe run_dev.py",
+    "backend:dev": "cd backend && set UVICORN_RELOAD=true&& .\\venv\\Scripts\\python.exe run_dev.py",
+    "setup:backend": "cd backend && python -m venv venv && .\\venv\\Scripts\\pip.exe install -r requirements.txt",
+    "install:all": "npm install && npm install --prefix frontend && npm run setup:backend"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}

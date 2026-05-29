@@ -1,0 +1,16 @@
+node_modules/
+frontend/node_modules/
+frontend/dist/
+backend/venv/
+backend/__pycache__/
+backend/**/__pycache__/
+backend/data/
+backend/.env
+backend/output/
+backend/uploads/
+.env
+frontend/.env
+*.pyc
+.DS_Store
+*.log
+.cursor/

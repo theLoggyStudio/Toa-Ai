@@ -1,0 +1,6 @@
+# Dépendances IA lourdes (OCR) — installer avec install-ml.ps1
+# Séparées car unidic_lite (~47 Mo) et torch peuvent timeout sur connexion lente.
+
+manga-ocr>=0.1.14
+easyocr>=1.7.1
+# Optionnel : pip install jamdict jamdict-data (sinon JMdict SQLite auto-téléchargé)

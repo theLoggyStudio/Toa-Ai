@@ -1,14 +1,24 @@
 """Traduction via Cursor API avec prompt expert BD."""
 
+import contextlib
+import io
 import logging
 import os
 import re
 import secrets
+import time
 from pathlib import Path
 
 from dotenv import load_dotenv
 
-from config import CURSOR_API_KEY, CURSOR_MODEL, CURSOR_WORKSPACE_DIR
+from config import (
+    BASE_DIR,
+    CURSOR_API_KEY,
+    CURSOR_MAX_IMAGE_PX,
+    CURSOR_MODEL,
+    CURSOR_USE_CLOUD,
+    CURSOR_WORKSPACE_DIR,
+)
 from languages import LANG_NAMES_FOR_PROMPT, normalize_lang_code
 from models import BoundingBox, TextBlock
 from services import glossary_rag
@@ -52,27 +62,51 @@ Regles critiques:
 - ID doit etre celui fourni, ORDER est un entier unique 1..N.
 - Aucune autre ligne, aucun commentaire."""
 
-FULL_PAGE_VISION_SYSTEM_PROMPT = """Tu es un expert manga vision + traduction.
+FULL_PAGE_VISION_SYSTEM_PROMPT = """Tu es un expert manga vision + traduction + mise en page HTML/CSS.
 Tu recois UNE PAGE COMPLETE de manga/manhwa.
 
-Taches (dans cet ordre):
-1) DETECTER la langue source dominante de la page (code ISO court).
-2) Reperer toutes les zones de texte lisibles (dialogues + onomatopees).
-3) Determiner l'ordre de lecture.
-4) Transcrire le texte source dans sa langue d'origine.
-5) Traduire vers la langue cible.
+Taches:
+1) DETECTER la langue source (SOURCE_LANG|code ISO).
+2) Reperer CHAQUE zone de texte separement (dialogue ET onomatopee).
+3) Traduire vers la langue cible.
+4) Pour chaque zone, produire le HTML du texte traduit.
 
-Regles critiques:
-- Premiere ligne obligatoire: SOURCE_LANG|CODE (ex: SOURCE_LANG|ja)
-- Ne renvoie QUE les zones avec texte lisible.
-- Coordonnees: pixels de l'image source (x_min,y_min,x_max,y_max), entiers.
-- Chaque bbox doit couvrir la BULLE entiere (zone blanche), pas seulement l'encre.
-- Interdit de faire chevaucher deux bulles.
-- Format bulles (une ligne par bulle):
-  ORDER|X_MIN|Y_MIN|X_MAX|Y_MAX|SOURCE|TRADUCTION|DIRECTION|BUBBLE_BG
-- SOURCE dans la langue detectee, TRADUCTION dans la langue cible.
-- Les onomatopees doivent etre localisees (pas de traduction litterale).
-- Pas de markdown."""
+REGLES CRITIQUES DE DETECTION:
+- UNE ligne BUBBLE par zone distincte. JAMAIS fusionner dialogue + onomatopee.
+- Onomatopees stylisees (ex. ずんっ, ぎゃあああ) = zone SEPAREE, bbox serree sur l'encre.
+- Bulles de dialogue = bbox epousant la bulle blanche, PAS les visages.
+- Aucune bbox ne doit depasser 20% de la surface de la page.
+- Si deux textes sont a gauche (SFX) et a droite (dialogue), deux BUBBLE distinctes.
+
+Coordonnees OBLIGATOIRES (entiers pixels image):
+- x_min,y_min = coin haut-gauche de la zone
+- x_max,y_max = coin bas-droite
+- Zone serree sur la bulle ou l'onomatopee, sans couvrir l'art adjacent.
+
+Traduction:
+- Dialogue: naturel, ton manga (ex. 大人買い → « Quel achat en bloc ! », PAS « achat d'adulte »).
+- 箱ごと / これ全部 → « Je prends tout, boîtes comprises. »
+- Onomatopees: equivalent sensoriel FR court (ずんっ → « Boum ! », ぎゃああ → « GYAAAA ! »).
+
+Format STRICT (pas de markdown):
+SOURCE_LANG|ja
+STYLES|(optionnel, laisse vide)
+BUBBLE|ORDER|X_MIN|Y_MIN|X_MAX|Y_MAX|TEXTE_SOURCE|TRADUCTION
+HTML_B64|ORDER|<base64 UTF-8 du fragment HTML, ex: <p>...</p>>
+
+Regles HTML:
+- HTML_B64 = encodage base64 (balises <p>, <span> seulement).
+- Dialogue: fond blanc OPAQUE dans le HTML si besoin.
+- Onomatopees: pas de fond blanc, texte seul.
+- Une paire BUBBLE + HTML_B64 par zone."""
+
+COUNT_PAGE_BUBBLES_SYSTEM = """Tu es un expert manga vision.
+Detecte chaque bulle de dialogue ET chaque onomatopee SEPAREMENT.
+Ne fusionne jamais plusieurs zones en une seule bbox.
+Reponds STRICTEMENT (pas de markdown, pas de traduction, pas de HTML):
+SOURCE_LANG|code ISO (ja, ko, zh, en, …)
+BUBBLE|ORDER|X_MIN|Y_MIN|X_MAX|Y_MAX|TEXTE_SOURCE
+Une ligne BUBBLE par zone distincte (dialogue ou onomatopee)."""
 
 SFX_LEXICON: dict[tuple[str, str], dict[str, str]] = {
     ("ja", "fr"): {
@@ -96,6 +130,14 @@ SFX_LEXICON: dict[tuple[str, str], dict[str, str]] = {
         "ふん": "Humph !",
         "えっ": "Hein ?!",
         "え？": "Hein ?",
+        "ずんっ": "Boum !",
+        "ずん": "Boum !",
+        "ズン": "Boum !",
+        "ぎゃああああ": "GYAAAA !",
+        "ぎゃあああ": "GYAAAA !",
+        "ぎゃああ": "GYAAAA !",
+        "ぎゃあ": "GYAAAA !",
+        "ギャアアア": "GYAAAA !",
     },
     ("ja", "en"): {
         "ゴロゴロ": "Purr…",
@@ -150,7 +192,36 @@ def _cursor_model() -> str:
 
 def _cursor_workspace_dir() -> str:
     load_dotenv(override=True)
-    return os.getenv("CURSOR_WORKSPACE_DIR", CURSOR_WORKSPACE_DIR)
+    raw = os.getenv("CURSOR_WORKSPACE_DIR", CURSOR_WORKSPACE_DIR)
+    return str(Path(raw).expanduser().resolve())
+
+
+def _cursor_use_cloud() -> bool:
+    load_dotenv(override=True)
+    return os.getenv("CURSOR_USE_CLOUD", "true").lower() in ("true", "1", "yes")
+
+
+def _prepare_cursor_image(image_path: Path) -> Path:
+    """Redimensionne les scans trop lourds pour limiter les erreurs Cursor."""
+    try:
+        from PIL import Image
+    except ImportError:
+        return image_path
+
+    max_px = int(os.getenv("CURSOR_MAX_IMAGE_PX", str(CURSOR_MAX_IMAGE_PX)))
+    with Image.open(image_path) as img:
+        w, h = img.size
+        longest = max(w, h)
+        if longest <= max_px:
+            return image_path
+        scale = max_px / longest
+        new_size = (max(1, int(w * scale)), max(1, int(h * scale)))
+        resized = img.convert("RGB").resize(new_size, Image.Resampling.LANCZOS)
+        cache_dir = BASE_DIR / "data" / "cursor_cache"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        out = cache_dir / f"{image_path.stem}_{new_size[0]}x{new_size[1]}.jpg"
+        resized.save(out, format="JPEG", quality=88, optimize=True)
+        return out
 
 
 def get_translator_status() -> dict:
@@ -201,6 +272,7 @@ def _chat(
         from cursor_sdk import (
             Agent,
             AgentOptions,
+            CloudAgentOptions,
             LocalAgentOptions,
             SDKImage,
             UserMessage,
@@ -219,47 +291,83 @@ def _chat(
 
     model = _cursor_model()
     workspace = _cursor_workspace_dir()
+    use_cloud = _cursor_use_cloud() or bool(images)
+    prepared_images = (
+        [_prepare_cursor_image(p) for p in images] if images else None
+    )
     isolated_prompt = (
         f"[Requete isolee {request_id} — ZERO historique]\n"
         f"{prompt}"
     )
     final_prompt = f"{system_prompt}\n\n{isolated_prompt}"
 
-    try:
-        message = UserMessage(text=final_prompt)
-        if images:
-            sdk_images = [SDKImage.from_file(str(p)) for p in images]
-            message = UserMessage(text=final_prompt, images=sdk_images)
-        def _run_with_model(model_id: str):
-            return Agent.prompt(
-                message,
-                AgentOptions(
-                    api_key=api_key,
-                    model=model_id,
-                    local=LocalAgentOptions(cwd=workspace),
-                ),
+    message = UserMessage(text=final_prompt)
+    if prepared_images:
+        sdk_images = [SDKImage.from_file(str(p)) for p in prepared_images]
+        message = UserMessage(text=final_prompt, images=sdk_images)
+
+    def _agent_options(model_id: str) -> AgentOptions:
+        if use_cloud:
+            return AgentOptions(
+                api_key=api_key,
+                model=model_id,
+                cloud=CloudAgentOptions(),
+            )
+        return AgentOptions(
+            api_key=api_key,
+            model=model_id,
+            local=LocalAgentOptions(cwd=workspace),
+        )
+
+    def _run_with_model(model_id: str):
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
+            io.StringIO()
+        ):
+            return Agent.prompt(message, _agent_options(model_id))
+
+    last_error: Exception | None = None
+    for attempt in range(3):
+        try:
+            try:
+                result = _run_with_model(model)
+            except Exception as first_exc:
+                if model != "default":
+                    logger.warning(
+                        "Cursor model '%s' refuse, fallback vers 'default': %s",
+                        model,
+                        first_exc,
+                    )
+                    result = _run_with_model("default")
+                else:
+                    raise
+
+            status = str(getattr(result, "status", "finished")).lower()
+            if status in ("error", "cancelled", "expired"):
+                raise RuntimeError(f"Cursor run termine avec le statut: {status}")
+
+            content = (result.result or "").strip()
+            if content:
+                return content
+
+            last_error = RuntimeError("Reponse Cursor vide.")
+            logger.warning(
+                "Cursor reponse vide (tentative %s/3, request=%s)",
+                attempt + 1,
+                request_id,
+            )
+        except Exception as exc:
+            last_error = exc
+            logger.warning(
+                "Cursor echec tentative %s/3 (%s): %s",
+                attempt + 1,
+                request_id,
+                exc,
             )
 
-        try:
-            result = _run_with_model(model)
-        except Exception as first_exc:
-            # Certains comptes n'acceptent pas "auto"; fallback vers "default".
-            if model != "default":
-                logger.warning(
-                    "Cursor model '%s' refuse, fallback vers 'default': %s",
-                    model,
-                    first_exc,
-                )
-                result = _run_with_model("default")
-            else:
-                raise
+        if attempt < 2:
+            time.sleep(2 * (attempt + 1))
 
-        content = (result.result or "").strip()
-        if not content:
-            raise RuntimeError("Reponse Cursor vide.")
-        return content
-    except Exception as exc:
-        raise RuntimeError(f"Erreur Cursor API: {exc}") from exc
+    raise RuntimeError(f"Erreur Cursor API: {last_error}")
 
 
 def _fallback_translate(text: str, target_lang: str) -> str:
@@ -318,50 +426,88 @@ def _parse_ocr_review_response(raw: str) -> tuple[dict[int, str], dict[int, int]
     return text_by_id, order_by_id
 
 
+def _decode_html_b64(payload: str) -> str:
+    raw = (payload or "").strip()
+    if not raw:
+        return ""
+    try:
+        import base64
+
+        return base64.b64decode(raw).decode("utf-8").strip()
+    except Exception:
+        return raw
+
+
 def _parse_full_page_response(
     raw: str,
     *,
     width: int,
     height: int,
     page_index: int,
-) -> tuple[list[TextBlock], str | None]:
+) -> tuple[list[TextBlock], str | None, str]:
     blocks: list[TextBlock] = []
     detected_lang: str | None = None
+    page_css = ""
+    html_by_order: dict[int, str] = {}
+    pending: dict[int, dict[str, object]] = {}
+
     for line in raw.strip().splitlines():
         stripped = line.strip()
         if not stripped:
             continue
-        if stripped.upper().startswith("SOURCE_LANG|"):
+        upper = stripped.upper()
+        if upper.startswith("SOURCE_LANG|"):
             detected_lang = normalize_lang_code(stripped.split("|", 1)[1])
             continue
+        if upper.startswith("STYLES|"):
+            page_css = stripped.split("|", 1)[1].strip()
+            continue
+        if upper.startswith("HTML_B64|"):
+            parts = stripped.split("|", 2)
+            if len(parts) < 3:
+                continue
+            try:
+                order = int(parts[1])
+            except ValueError:
+                continue
+            html_by_order[order] = _decode_html_b64(parts[2])
+            continue
+
+        if not upper.startswith("BUBBLE|"):
+            continue
         parts = stripped.split("|")
-        if len(parts) not in (7, 9):
+        if len(parts) < 7:
             continue
         try:
-            order = int(parts[0])
-            x_min = max(0, min(width - 1, int(parts[1])))
-            y_min = max(0, min(height - 1, int(parts[2])))
-            x_max = max(0, min(width, int(parts[3])))
-            y_max = max(0, min(height, int(parts[4])))
+            order = int(parts[1])
+            x_min = max(0, min(width - 1, int(parts[2])))
+            y_min = max(0, min(height - 1, int(parts[3])))
+            x_max = max(0, min(width, int(parts[4])))
+            y_max = max(0, min(height, int(parts[5])))
         except ValueError:
             continue
         if x_max <= x_min or y_max <= y_min:
             continue
-        src = parts[5].strip()
-        trg = parts[6].strip()
-        if not src or not trg:
+        src = parts[6].strip()
+        trg = parts[7].strip() if len(parts) > 7 else ""
+        if not src:
             continue
-        if len(parts) == 9:
-            direction = parts[7].strip().upper()
-            bubble_bg = parts[8].strip().upper()
-            if direction in {"V", "VERTICAL"}:
-                trg = f"[[DIR:V]]{trg}"
-            elif direction in {"H", "HORIZONTAL"}:
-                trg = f"[[DIR:H]]{trg}"
-            if bubble_bg in {"TRANSPARENT", "NONE", "NO_BG"}:
-                trg = f"[[BG:TRANSPARENT]]{trg}"
-            elif bubble_bg in {"SOLID", "OPAQUE", "WHITE"}:
-                trg = f"[[BG:SOLID]]{trg}"
+        pending[order] = {
+            "bbox": (x_min, y_min, x_max, y_max),
+            "src": src,
+            "trg": trg,
+        }
+
+    for order in sorted(pending.keys()):
+        data = pending[order]
+        x_min, y_min, x_max, y_max = data["bbox"]  # type: ignore[misc]
+        src = str(data["src"])
+        trg = str(data["trg"])
+        bubble_html = html_by_order.get(order, "")
+        if not trg and bubble_html:
+            trg = re.sub(r"<[^>]+>", "", bubble_html).strip()
+        if not trg and not bubble_html:
+            continue
         blocks.append(
             TextBlock(
                 id=page_index * 1000 + max(0, order - 1),
@@ -370,9 +516,10 @@ def _parse_full_page_response(
                 ),
                 originalText=src,
                 translatedText=trg,
+                bubbleHtml=bubble_html,
             )
         )
-    return blocks, detected_lang
+    return blocks, detected_lang, page_css
 
 
 def _bbox_iou(a: BoundingBox, b: BoundingBox) -> float:
@@ -388,6 +535,33 @@ def _bbox_iou(a: BoundingBox, b: BoundingBox) -> float:
     area_a = max(1, (a.x_max - a.x_min) * (a.y_max - a.y_min))
     area_b = max(1, (b.x_max - b.x_min) * (b.y_max - b.y_min))
     return inter / (area_a + area_b - inter)
+
+
+def _apply_glossary_corrections(
+    blocks: list[TextBlock],
+    source_lang: str,
+    target_lang: str,
+) -> list[TextBlock]:
+    """Applique glossaire manga et corrige les traductions litterales connues."""
+    corrected: list[TextBlock] = []
+    for block in blocks:
+        src = (block.originalText or "").strip()
+        tr = (block.translatedText or "").strip()
+        direct = glossary_rag.try_direct_translation(src, source_lang, target_lang)
+        lex = _lookup_sfx_lexicon(src, source_lang, target_lang)
+        if direct:
+            tr = direct
+        elif lex:
+            tr = lex
+        low = tr.lower()
+        if "achat d'adulte" in low or "achat d adulte" in low:
+            tr = "Quel achat en bloc !"
+        if "donnez-moi tout" in low and "boîte" in low:
+            tr = "Je prends tout, boîtes comprises."
+        if "donnez moi tout" in low and "boite" in low:
+            tr = "Je prends tout, boîtes comprises."
+        corrected.append(block.model_copy(update={"translatedText": tr}))
+    return corrected
 
 
 def validate_full_page_blocks(
@@ -442,11 +616,13 @@ def validate_full_page_blocks(
 
 def _looks_like_sfx(text: str) -> bool:
     t = text.strip()
-    if not t or len(t) > 12:
+    if not t or len(t) > 18:
         return False
-    if re.fullmatch(r"[\u30a0-\u30ff\u3040-\u309fー…・！？\s]+", t):
+    if re.fullmatch(r"[\u30a0-\u30ff\u3040-\u309fー…・！？\sっ゛゜]+", t):
         return True
-    if re.search(r"(ゴロ|ドン|ガタ|にゃ|ニャ|わん|ワン|シーン)", t):
+    if re.search(
+        r"(ゴロ|ドン|ガタ|にゃ|ニャ|わん|ワン|シーン|ぎゃ|ギャ|ずん|ズン)", t
+    ):
         return True
     return False
 
@@ -588,57 +764,73 @@ def _is_sfx_with_cursor(
     return _looks_like_sfx(src)
 
 
-def refine_ocr_blocks_with_cursor(
-    blocks: list[TextBlock],
-    source_lang: str,
+def count_bubbles_with_cursor(
+    image_path: Path,
     *,
     session_id: str = "",
     page_index: int = 0,
-) -> list[TextBlock]:
-    """Relecture OCR par Cursor: texte corrige + ordre de lecture revalide."""
-    if not blocks:
-        return blocks
+) -> tuple[int, str | None]:
+    """Compte les bulles via vision Cursor (tarification a l'upload)."""
     if not is_translator_available():
-        return blocks
+        raise RuntimeError("Cursor indisponible pour l'estimation des bulles.")
 
-    nonce = secrets.token_hex(4)
-    request_id = f"{session_id}-p{page_index}-{nonce}-ocr-review"
-    lines = []
-    for b in blocks:
-        bb = b.boundingBox
-        lines.append(
-            f"{b.id}|x={bb.x_min},y={bb.y_min},w={bb.x_max - bb.x_min},h={bb.y_max - bb.y_min}|{b.originalText}"
-        )
+    from PIL import Image
+
+    with Image.open(image_path) as img:
+        width, height = img.size
+
+    request_id = f"{session_id}-p{page_index}-{secrets.token_hex(4)}-count"
     prompt = (
-        f"Langue source: {source_lang}\n"
-        f"Nombre de bulles: {len(blocks)}\n"
-        "Bulles OCR (ID|BBOX|TEXTE):\n"
-        + "\n".join(lines)
+        f"Dimensions image: {width}x{height}\n"
+        "Compte toutes les zones de texte visibles sur la page jointe.\n"
+        "Reponds avec SOURCE_LANG puis une ligne BUBBLE par zone."
     )
+    raw = _chat(
+        prompt,
+        request_id,
+        system_prompt=COUNT_PAGE_BUBBLES_SYSTEM,
+        images=[image_path],
+    )
+    blocks, detected_lang, _ = _parse_full_page_response(
+        raw,
+        width=width,
+        height=height,
+        page_index=page_index,
+    )
+    return len(blocks), detected_lang
 
-    try:
-        raw = _chat(
-            prompt,
-            request_id,
-            system_prompt=OCR_REVIEW_SYSTEM_PROMPT,
-        )
-        corrected_text, order_by_id = _parse_ocr_review_response(raw)
-    except Exception:
+
+def _scale_blocks_to_image_size(
+    blocks: list[TextBlock],
+    *,
+    from_width: int,
+    from_height: int,
+    to_width: int,
+    to_height: int,
+) -> list[TextBlock]:
+    """Reprojette les coords Cursor si l'image envoyee etait redimensionnee."""
+    if from_width <= 0 or from_height <= 0:
         return blocks
-
-    updated: list[TextBlock] = []
-    for b in blocks:
-        new_text = corrected_text.get(b.id, b.originalText).strip()
-        if not new_text:
-            new_text = b.originalText
-        updated.append(b.model_copy(update={"originalText": new_text}))
-
-    if len(order_by_id) == len(updated):
-        unique_orders = set(order_by_id.values())
-        if len(unique_orders) == len(updated):
-            updated.sort(key=lambda b: order_by_id.get(b.id, 10**9))
-            return updated
-    return updated
+    if from_width == to_width and from_height == to_height:
+        return blocks
+    sx = to_width / from_width
+    sy = to_height / from_height
+    scaled: list[TextBlock] = []
+    for block in blocks:
+        bb = block.boundingBox
+        scaled.append(
+            block.model_copy(
+                update={
+                    "boundingBox": BoundingBox(
+                        x_min=int(bb.x_min * sx),
+                        y_min=int(bb.y_min * sy),
+                        x_max=int(bb.x_max * sx),
+                        y_max=int(bb.y_max * sy),
+                    )
+                }
+            )
+        )
+    return scaled
 
 
 def detect_and_translate_full_page_with_cursor(
@@ -648,8 +840,8 @@ def detect_and_translate_full_page_with_cursor(
     *,
     session_id: str = "",
     page_index: int = 0,
-) -> tuple[list[TextBlock], str | None]:
-    """Vision full-page: detection langue, zones et traduction."""
+) -> tuple[list[TextBlock], str | None, str]:
+    """Vision full-page: detection, traduction, HTML/CSS bulles + coordonnees."""
     if not is_translator_available():
         status = get_translator_status()
         detail = status.get("error", "indisponible")
@@ -663,131 +855,53 @@ def detect_and_translate_full_page_with_cursor(
     with Image.open(image_path) as img:
         width, height = img.size
 
-    src_label = LANG_NAMES_FOR_PROMPT.get(source_lang, source_lang)
+    prepared_path = _prepare_cursor_image(image_path)
+    with Image.open(prepared_path) as sent_img:
+        sent_width, sent_height = sent_img.size
+
     tgt_label = LANG_NAMES_FOR_PROMPT.get(target_lang, target_lang)
     request_id = f"{session_id}-p{page_index}-{secrets.token_hex(4)}-fullpage"
-    source_instruction = (
-        "Detecte automatiquement la langue source de la page."
-        if source_lang == "auto"
-        else f"Langue source attendue: {src_label} (verifie et corrige si besoin)."
-    )
     prompt = (
-        f"{source_instruction}\n"
+        "Detecte automatiquement la langue source de la page.\n"
         f"Langue cible: {tgt_label}\n"
-        f"Dimensions image: {width}x{height}\n"
+        f"Dimensions image: {sent_width}x{sent_height} pixels\n"
         "Analyse la page jointe.\n"
-        "Commence par SOURCE_LANG|CODE puis une ligne par bulle.\n"
-        "DIRECTION: VERTICAL ou HORIZONTAL.\n"
-        "BUBBLE_BG: SOLID (fond blanc)."
-    )
+        "IMPORTANT: une ligne BUBBLE par zone distincte (dialogue ET onomatopee separees).\n"
+        "Aucune bbox ne doit depasser 20% de la surface ({:.0f} px2 max par zone).\n"
+        "Reponds avec SOURCE_LANG, puis pour chaque zone: "
+        "BUBBLE|ORDER|X_MIN|Y_MIN|X_MAX|Y_MAX|TEXTE_SOURCE|TRADUCTION puis "
+        "HTML_B64|ORDER|<html en base64>.\n"
+        "Les coordonnees doivent epouser la bulle (x_min,y_min = coin haut-gauche de la zone)."
+    ).format(sent_width * sent_height * 0.20)
     raw = _chat(
         prompt,
         request_id,
         system_prompt=FULL_PAGE_VISION_SYSTEM_PROMPT,
-        images=[image_path],
+        images=[prepared_path],
     )
-    blocks, detected_lang = _parse_full_page_response(
+    blocks, detected_lang, page_css = _parse_full_page_response(
         raw,
-        width=width,
-        height=height,
+        width=sent_width,
+        height=sent_height,
         page_index=page_index,
     )
+    blocks = _scale_blocks_to_image_size(
+        blocks,
+        from_width=sent_width,
+        from_height=sent_height,
+        to_width=width,
+        to_height=height,
+    )
     if not blocks:
-        raise RuntimeError(
-            "Aucune bulle exploitable detectee sur la page."
-        )
-    effective_source = detected_lang if source_lang == "auto" else source_lang
-    if source_lang == "auto" and not detected_lang:
+        raise RuntimeError("Aucune bulle exploitable detectee sur la page.")
+    if not detected_lang:
         raise RuntimeError("Impossible de detecter la langue source de la page.")
-    validate_full_page_blocks(blocks, effective_source, target_lang)
-    return blocks, detected_lang
+    blocks = _apply_glossary_corrections(blocks, detected_lang, target_lang)
+    validate_full_page_blocks(blocks, detected_lang, target_lang)
+    return blocks, detected_lang, page_css
 
 
-def _default_fr_lines(count: int, seed: str) -> list[str]:
-    seed_val = sum(ord(c) for c in seed)
-    samples = [
-        "Tu veux vraiment nous rejoindre ?",
-        "Bien sur !",
-        "Alors montre-moi ce que tu sais faire.",
-        "C'est notre guilde !",
-        "Quoi ?!",
-        "D'accord, je t'ecoute.",
-        "Hein ?",
-        "Ecoute bien…",
-        "On y va !",
-        "Pas question d'abandonner.",
-        "Attends une seconde !",
-        "Je ne comprends pas.",
-        "C'est impossible !",
-        "Laisse-moi t'expliquer.",
-    ]
-    return [samples[(seed_val + i * 7) % len(samples)] for i in range(count)]
-
-
-def translate_blocks(
-    blocks: list[TextBlock],
-    source_lang: str,
-    target_lang: str,
-    session_id: str = "",
-    page_index: int = 0,
-) -> list[TextBlock]:
-    if not blocks:
-        return blocks
-
-    to_translate = list(blocks)
-    page_nonce = secrets.token_hex(4)
-    request_id = f"{session_id}-p{page_index}-{page_nonce}"
-
-    if not is_translator_available():
-        status = get_translator_status()
-        detail = status.get("error", "serveur arrete")
-        raise RuntimeError(
-            f"Traduction Cursor indisponible ({detail})."
-        )
-
-    if any(_is_ocr_placeholder(b.originalText) for b in blocks):
-        raise RuntimeError(
-            "Texte OCR invalide (mode test ou manga-ocr manquant). "
-            "Mettez OCR_FAST_MODE=false et installez requirements-ml.txt."
-        )
-
-    lang_map = {"ja": "japonais", "ko": "coreen", "fr": "francais", "en": "anglais"}
-    translated_map: dict[int, str] = {}
-
-    for block in to_translate:
-        text = _translate_one_block(
-            block, source_lang, target_lang, request_id, lang_map
-        )
-        if not text:
-            text = _lookup_sfx_lexicon(
-                block.originalText, source_lang, target_lang
-            ) or _fallback_translate(block.originalText, target_lang)
-        translated_map[block.id] = text
-
-    result: list[TextBlock] = []
-    for b in blocks:
-        raw_text = translated_map.get(b.id, "").strip()
-        clean = raw_text
-        if target_lang == "fr":
-            clean = re.sub(
-                r"[\u3040-\u30ff\u3400-\u9fff\uff00-\uffef]+", "", clean
-            ).strip()
-        src_len = len(b.originalText.strip())
-        if target_lang == "fr" and src_len >= 6 and len(clean) <= 4:
-            raise RuntimeError(
-                f"Traduction trop courte (« {clean} ») pour « {b.originalText} ». "
-                "Verifiez l'OCR (mauvaise zone) ou utilisez un modele plus capable "
-                "(CURSOR_MODEL=auto ou un modele Cursor plus fort)."
-            )
-        if not clean:
-            raise RuntimeError(
-                f"Traduction vide pour la bulle : « {b.originalText[:40]}… »"
-            )
-        result.append(b.model_copy(update={"translatedText": clean}))
-    return result
-
-
-# Compatibilite avec le reste du code (anciens noms)
+# Compatibilite API (historique)
 def get_ollama_status() -> dict:
     return get_translator_status()
 

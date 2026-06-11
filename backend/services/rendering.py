@@ -1,5 +1,6 @@
 """Superposition des bulles traduites sur la zone exacte du texte original."""
 
+import logging
 import os
 import re
 from pathlib import Path
@@ -9,6 +10,8 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 from models import BoundingBox, TextBlock
+
+logger = logging.getLogger(__name__)
 
 PROJECT_FONT_DIR = Path(__file__).resolve().parent.parent / "assets" / "fonts"
 
@@ -52,6 +55,13 @@ DEFAULT_SFX_FONTS = [
 ]
 
 TEXT_PAD = 3
+# Bbox > 8 % de la page : pas d'effacement (evite de detruire un panneau entier).
+MAX_BBOX_PAGE_RATIO = float(os.getenv("MAX_BBOX_PAGE_RATIO", "0.08"))
+# Seuil luminosite pour considerer un pixel comme encre de texte (0-255, plus bas = plus strict).
+INK_DARK_THRESHOLD = int(os.getenv("INK_DARK_THRESHOLD", "100"))
+# Fond blanc derriere le texte (255 = opaque, masque le japonais sous la bulle).
+TEXT_BG_ALPHA = max(0, min(255, int(os.getenv("TEXT_BG_ALPHA", "255"))))
+TEXT_BG_FILL = (255, 255, 255, TEXT_BG_ALPHA)
 MIN_FONT_SIZE = 7
 MAX_FONT_SIZE = 26
 FONT_SIZE_FACTOR = 2 / 3
@@ -86,11 +96,288 @@ def _looks_like_sfx_text(text: str) -> bool:
     t = (text or "").strip()
     if not t:
         return False
-    if len(t) <= 8 and re.fullmatch(r"[\u30a0-\u30ff\u3040-\u309fー…・！？\s]+", t):
+    if len(t) <= 18 and re.fullmatch(
+        r"[\u30a0-\u30ff\u3040-\u309fー…・！？\sっ゛゜]+", t
+    ):
         return True
-    if re.search(r"(ゴロ|ドン|ガタ|にゃ|ニャ|わん|ワン|シーン|バキ|ズキ|ドキ)", t):
+    if re.search(
+        r"(ゴロ|ドン|ガタ|にゃ|ニャ|わん|ワン|シーン|バキ|ズキ|ドキ|ぎゃ|ギャ|ずん|ズン)",
+        t,
+    ):
         return True
     return False
+
+
+def _is_tall_bbox(bb: BoundingBox) -> bool:
+    bw = max(1, bb.x_max - bb.x_min)
+    bh = max(1, bb.y_max - bb.y_min)
+    return bh > bw * 1.35
+
+
+def _is_round_bubble(base_bgr: np.ndarray, bb: BoundingBox) -> bool:
+    """Heuristique : bulle ronde si ratio proche du carré et fond clair dominant."""
+    h, w = base_bgr.shape[:2]
+    bb = _clip_bbox(bb, w, h)
+    bw = bb.x_max - bb.x_min
+    bh = bb.y_max - bb.y_min
+    if bw < 20 or bh < 20:
+        return False
+    ratio = bw / max(1, bh)
+    if ratio < 0.88 or ratio > 1.12:
+        return False
+    roi = base_bgr[bb.y_min : bb.y_max, bb.x_min : bb.x_max]
+    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+    bright_ratio = float(np.count_nonzero(gray > 175)) / max(1, gray.size)
+    return bright_ratio > 0.58
+
+
+def _cap_expanded_bbox(
+    original: BoundingBox,
+    expanded: BoundingBox,
+    width: int,
+    height: int,
+    *,
+    max_page_ratio: float = 0.10,
+    max_growth: float = 2.2,
+) -> BoundingBox:
+    """Limite l'expansion pour ne pas engloutir tout le panneau."""
+    page_area = width * height
+    if _box_area(expanded) > max_page_ratio * page_area:
+        expanded = original
+    ow = max(1, original.x_max - original.x_min)
+    oh = max(1, original.y_max - original.y_min)
+    ew = expanded.x_max - expanded.x_min
+    eh = expanded.y_max - expanded.y_min
+    if ew > ow * max_growth or eh > oh * max_growth:
+        pad = max(6, min(18, ow // 5, oh // 5))
+        return BoundingBox(
+            x_min=max(0, original.x_min - pad),
+            y_min=max(0, original.y_min - pad),
+            x_max=min(width, original.x_max + pad),
+            y_max=min(height, original.y_max + pad),
+        )
+    return expanded
+
+
+def _bbox_center(bb: BoundingBox) -> tuple[int, int]:
+    return (bb.x_min + bb.x_max) // 2, (bb.y_min + bb.y_max) // 2
+
+
+def _center_bbox_on_anchor(
+    anchor: BoundingBox,
+    sized: BoundingBox,
+    width: int,
+    height: int,
+    *,
+    max_growth: float = 1.35,
+) -> BoundingBox:
+    """Garde le centre Cursor ; ajuste la taille sans decaler la bulle."""
+    acx, acy = _bbox_center(anchor)
+    aw = max(8, anchor.x_max - anchor.x_min)
+    ah = max(8, anchor.y_max - anchor.y_min)
+    sw = sized.x_max - sized.x_min
+    sh = sized.y_max - sized.y_min
+    fw = max(aw, min(sw, int(aw * max_growth)))
+    fh = max(ah, min(sh, int(ah * max_growth)))
+    return _clip_bbox(
+        BoundingBox(
+            x_min=acx - fw // 2,
+            y_min=acy - fh // 2,
+            x_max=acx - fw // 2 + fw,
+            y_max=acy - fh // 2 + fh,
+        ),
+        width,
+        height,
+    )
+
+
+def _union_bbox(a: BoundingBox, b: BoundingBox, width: int, height: int) -> BoundingBox:
+    return _clip_bbox(
+        BoundingBox(
+            x_min=min(a.x_min, b.x_min),
+            y_min=min(a.y_min, b.y_min),
+            x_max=max(a.x_max, b.x_max),
+            y_max=max(a.y_max, b.y_max),
+        ),
+        width,
+        height,
+    )
+
+
+def _align_render_bbox(
+    cursor_bb: BoundingBox,
+    detected_bb: BoundingBox,
+    width: int,
+    height: int,
+) -> BoundingBox:
+    """Fusionne detection locale + coords Cursor, centre ancre sur Cursor."""
+    capped = _cap_expanded_bbox(cursor_bb, detected_bb, width, height)
+    centered = _center_bbox_on_anchor(cursor_bb, capped, width, height)
+    return _union_bbox(cursor_bb, centered, width, height)
+
+
+def _strict_ink_pixels(gray: np.ndarray) -> np.ndarray:
+    """Masque binaire : uniquement l'encre tres sombre (pas les gris/trames)."""
+    return (gray < INK_DARK_THRESHOLD).astype(np.uint8) * 255
+
+
+def _shrink_oversized_bbox(
+    bb: BoundingBox, width: int, height: int
+) -> BoundingBox:
+    """Réduit une bbox aberrante en gardant son centre."""
+    page_area = width * height
+    max_area = MAX_BBOX_PAGE_RATIO * page_area
+    if _box_area(bb) <= max_area:
+        return bb
+    cx = (bb.x_min + bb.x_max) // 2
+    cy = (bb.y_min + bb.y_max) // 2
+    side = max(24, int(max_area**0.5))
+    half = side // 2
+    return BoundingBox(
+        x_min=max(0, cx - half),
+        y_min=max(0, cy - half),
+        x_max=min(width, cx + half),
+        y_max=min(height, cy + half),
+    )
+
+
+def _add_ink_mask(
+    base_bgr: np.ndarray,
+    bb: BoundingBox,
+    mask: np.ndarray,
+    *,
+    dilate_iters: int = 1,
+) -> None:
+    h, w = base_bgr.shape[:2]
+    bb = _clip_bbox(bb, w, h)
+    x0, y0, x1, y1 = bb.x_min, bb.y_min, bb.x_max, bb.y_max
+    if x1 <= x0 or y1 <= y0:
+        return
+    roi = base_bgr[y0:y1, x0:x1]
+    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+    dark = _strict_ink_pixels(gray)
+    if dilate_iters > 0:
+        dark = cv2.dilate(
+            dark,
+            cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2)),
+            iterations=dilate_iters,
+        )
+    mask[y0:y1, x0:x1] = cv2.bitwise_or(mask[y0:y1, x0:x1], dark)
+
+
+def _erase_dialogue_ink_white(bgr: np.ndarray, bb: BoundingBox) -> None:
+    """Dans une bulle blanche : remplace uniquement l'encre par du blanc (sans inpaint)."""
+    h, w = bgr.shape[:2]
+    bb = _clip_bbox(bb, w, h)
+    x0, y0, x1, y1 = bb.x_min, bb.y_min, bb.x_max, bb.y_max
+    if x1 <= x0 or y1 <= y0:
+        return
+    roi = bgr[y0:y1, x0:x1]
+    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+    ink = _strict_ink_pixels(gray)
+    ink = cv2.dilate(
+        ink,
+        cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2)),
+        iterations=1,
+    )
+    roi[ink > 0] = (255, 255, 255)
+    bgr[y0:y1, x0:x1] = roi
+
+
+def _prepend_render_tags(text: str, tags: str) -> str:
+    clean = text or ""
+    for tag in ("[[DIR:V]]", "[[DIR:H]]", "[[BG:SOLID]]", "[[BG:TRANSPARENT]]"):
+        clean = clean.replace(tag, "")
+    return f"{tags}{clean.strip()}"
+
+
+def refine_blocks_for_render(
+    image_path: Path,
+    blocks: list[TextBlock],
+) -> list[TextBlock]:
+    """Affine les bbox (bulle blanche / encre) et ajoute les tags de rendu."""
+    bgr = cv2.imread(str(image_path))
+    if bgr is None:
+        return blocks
+    h, w = bgr.shape[:2]
+    page_area = w * h
+    refined: list[TextBlock] = []
+
+    for block in blocks:
+        cursor_bb = _clip_bbox(block.boundingBox, w, h)
+        area = _box_area(cursor_bb)
+        if area > MAX_BBOX_PAGE_RATIO * page_area:
+            logger.warning(
+                "Bbox tres large (%.0f%% page) bulle #%s — resserrement force",
+                100 * area / max(1, page_area),
+                block.id,
+            )
+            tight = _refine_bbox_to_text(bgr, cursor_bb)
+            cursor_bb = _shrink_oversized_bbox(
+                tight if _box_area(tight) < area else cursor_bb, w, h
+            )
+
+        is_sfx = _looks_like_sfx_text(block.originalText)
+        if is_sfx:
+            ink_bb = _refine_bbox_to_text(bgr, cursor_bb)
+            new_bb = _align_render_bbox(cursor_bb, ink_bb, w, h)
+            tags = "[[BG:TRANSPARENT]][[DIR:V]]"
+        else:
+            expanded = expand_bbox_to_bubble_region(bgr, cursor_bb)
+            new_bb = _align_render_bbox(cursor_bb, expanded, w, h)
+            tags = "[[BG:SOLID]][[DIR:H]]"
+
+        tr = _prepend_render_tags(block.translatedText, tags)
+        refined.append(
+            block.model_copy(
+                update={"boundingBox": new_bb, "translatedText": tr},
+            )
+        )
+    return refined
+
+
+def erase_text_regions(
+    image_path: Path,
+    blocks: list[TextBlock],
+    output_path: Path,
+) -> None:
+    """Efface uniquement l'encre du texte source (inpaint cible, sans peindre la page)."""
+    import shutil
+
+    bgr = cv2.imread(str(image_path))
+    if bgr is None:
+        shutil.copy2(image_path, output_path)
+        return
+
+    h, w = bgr.shape[:2]
+    page_area = w * h
+    max_erase_area = MAX_BBOX_PAGE_RATIO * page_area
+    inpaint_mask = np.zeros((h, w), dtype=np.uint8)
+
+    for block in blocks:
+        bb = _clip_bbox(block.boundingBox, w, h)
+        if _box_area(bb) > max_erase_area:
+            logger.warning(
+                "Effacement ignore (bbox %.0f%% page) bulle #%s",
+                100 * _box_area(bb) / max(1, page_area),
+                block.id,
+            )
+            continue
+
+        is_sfx = _looks_like_sfx_text(block.originalText)
+        work_bb = _clip_bbox(block.boundingBox, w, h)
+        if _box_area(work_bb) > max_erase_area:
+            continue
+        if is_sfx:
+            _add_ink_mask(bgr, work_bb, inpaint_mask, dilate_iters=1)
+        else:
+            _erase_dialogue_ink_white(bgr, work_bb)
+
+    if np.any(inpaint_mask):
+        bgr = cv2.inpaint(bgr, inpaint_mask, 3, cv2.INPAINT_TELEA)
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(str(output_path), bgr)
 
 
 def _font_candidates_for_block(block: TextBlock) -> list[str]:
@@ -137,9 +424,11 @@ def expand_bbox_to_bubble_region(base_bgr: np.ndarray, bb: BoundingBox) -> Bound
     cy = max(0, min(roi.shape[0] - 1, cy))
 
     n, _, stats, _ = cv2.connectedComponentsWithStats(white)
+    orig_area = max(1, bw * bh)
+    max_bubble_area = min(0.10 * w * h, orig_area * 4)
     for i in range(1, n):
         sx, sy, sw, sh, area = stats[i]
-        if area < 120:
+        if area < 120 or area > max_bubble_area:
             continue
         if sx <= cx <= sx + sw and sy <= cy <= sy + sh:
             return BoundingBox(
@@ -388,8 +677,8 @@ def _draw_bubble_overlay(
         draw.rounded_rectangle(
             (bx0, by0, bx1, by1),
             radius=min(8, bw // 6, bh // 6),
-            fill=(255, 255, 255, 255),
-            outline=(0, 0, 0),
+            fill=TEXT_BG_FILL,
+            outline=(0, 0, 0, min(255, TEXT_BG_ALPHA + 40)),
             width=1,
         )
         cx = (bx0 + bx1) // 2
@@ -495,8 +784,8 @@ def _draw_bubble_overlay_vertical(
         draw.rounded_rectangle(
             (bx0, by0, bx1, by1),
             radius=min(8, (bx1 - bx0) // 6, (by1 - by0) // 6),
-            fill=(255, 255, 255, 255),
-            outline=(0, 0, 0),
+            fill=TEXT_BG_FILL,
+            outline=(0, 0, 0, min(255, TEXT_BG_ALPHA + 40)),
             width=1,
         )
         start_x = bx0 + max(0, ((bx1 - bx0) - total_w) // 2)
@@ -530,8 +819,16 @@ def inpaint_and_render(
     output_path: Path,
     target_language: str = "fr",
 ) -> None:
-    """Superpose la traduction sur l'image originale (sans inpaint ni flou)."""
-    pil = Image.open(image_path).convert("RGBA")
+    """Efface le texte source puis superpose la traduction."""
+    blocks = refine_blocks_for_render(image_path, blocks)
+    cleaned = output_path.with_name(f".{output_path.stem}_clean.png")
+    try:
+        erase_text_regions(image_path, blocks, cleaned)
+        source = cleaned
+    except Exception:
+        source = image_path
+
+    pil = Image.open(source).convert("RGBA")
     img_w, img_h = pil.size
 
     clipped_blocks = [
@@ -561,7 +858,7 @@ def inpaint_and_render(
             if dir_hint == "horizontal"
             else vertical_mode
         )
-        draw_bg = True
+        draw_bg = bg_hint is not False
         if use_vertical:
             _draw_bubble_overlay_vertical(
                 draw,

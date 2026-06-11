@@ -16,8 +16,13 @@ def _rm_tree(path: Path) -> None:
         shutil.rmtree(path, ignore_errors=True)
 
 
-def purge_task_artifacts(task_id: str) -> None:
+def purge_task_uploads(task_id: str) -> None:
+    """Supprime uniquement les scans source (après traduction terminée)."""
     _rm_tree(UPLOAD_DIR / task_id)
+
+
+def purge_task_artifacts(task_id: str) -> None:
+    purge_task_uploads(task_id)
     _rm_tree(OUTPUT_DIR / task_id)
     pdf = OUTPUT_DIR / f"{task_id}.pdf"
     if pdf.exists():

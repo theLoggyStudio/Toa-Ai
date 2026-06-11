@@ -9,15 +9,15 @@ npm run install:all
 npm start
 ```
 
-- Frontend : http://localhost:5173/
-- Backend : http://127.0.0.1:8000
+- Frontend : http://localhost:3100/
+- Backend : http://127.0.0.1:9400
 
 Copiez `backend/.env.example` vers `backend/.env` et configurez vos clés.
 
 ## Déploiement
 
 - **Frontend (Vercel)** : voir [frontend/DEPLOY_VERCEL.md](frontend/DEPLOY_VERCEL.md)
-- **Backend** : hébergé en local (`http://127.0.0.1:8000`)
+- **Backend** : hébergé en local (`http://127.0.0.1:9400`)
 
 ## Structure
 

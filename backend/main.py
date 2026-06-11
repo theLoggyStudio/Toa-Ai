@@ -5,7 +5,7 @@ from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 
-from config import FRONTEND_ORIGIN
+from config import FRONTEND_ORIGIN, FRONTEND_PORT
 from routers.tasks import router as tasks_router
 from services.storage import recover_interrupted_tasks
 from services.transformation_report import render_home_page
@@ -35,15 +35,17 @@ origins = list(
     dict.fromkeys(
         [
             FRONTEND_ORIGIN.rstrip("/"),
-            "http://localhost:5173",
-            "http://127.0.0.1:5173",
+            f"http://localhost:{FRONTEND_PORT}",
+            f"http://127.0.0.1:{FRONTEND_PORT}",
         ]
     )
 )
 
 app.add_middleware(
     CORSMiddleware,
+    # Vite peut basculer sur 5174+ si 5173 est occupé — autoriser tout port local.
     allow_origins=origins,
+    allow_origin_regex=r"http://(localhost|127\.0\.0\.1):\d+",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -68,7 +70,7 @@ async def preload_glossary():
 
 @app.get("/health")
 async def health():
-    from config import CURSOR_MODEL, is_ocr_fast_mode
+    from config import CURSOR_MODEL
     from services.translation import (
         get_translator_status,
         is_translator_available,
@@ -80,7 +82,6 @@ async def health():
     return {
         "status": "ok",
         "service": "Toa AI",
-        "ocrFastMode": is_ocr_fast_mode(),
         "translatorAvailable": is_translator_available(),
         "translatorProvider": translator.get("provider"),
         "cursorModelConfigured": CURSOR_MODEL,

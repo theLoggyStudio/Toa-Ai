@@ -21,6 +21,7 @@ class TextBlock(BaseModel):
     boundingBox: BoundingBox
     originalText: str
     translatedText: str = ""
+    bubbleHtml: str = ""
 
 
 class TranslationTask(BaseModel):
@@ -31,6 +32,7 @@ class TranslationTask(BaseModel):
     status: TaskStatus
     amountCFA: int
     billableBubblesCount: int = 0
+    includeToa: bool = True
     payduniaToken: Optional[str] = None
     pdfUrl: Optional[str] = None
     progressPercent: int = 0
@@ -40,6 +42,7 @@ class TranslationTask(BaseModel):
 
 class AppConfigResponse(BaseModel):
     paymentDisabled: bool
+    priceBaseCFA: int
     pricePerBubbleCFA: int
 
 
@@ -57,6 +60,12 @@ class StartProcessingResponse(BaseModel):
 class CheckoutResponse(BaseModel):
     paymentUrl: str
     token: str
+
+
+class ConfirmPaymentResponse(BaseModel):
+    task: TranslationTask
+    paymentPending: bool = False
+    alreadyStarted: bool = False
 
 
 class BubbleTransformation(BaseModel):

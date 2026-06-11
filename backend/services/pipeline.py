@@ -1,16 +1,19 @@
-"""Pipeline IA complet : OCR → Traduction → Inpainting → PDF."""
+"""Pipeline IA : vision Cursor par lots de 5 pages → PDF partiels → fusion."""
 
 import logging
+import secrets
+import time
 from pathlib import Path
 
 from PIL import Image
 
-from config import OUTPUT_DIR, PRICE_PER_BUBBLE_CFA, is_ocr_fast_mode
-from languages import normalize_lang_code, resolve_ocr_language
-from models import TextBlock
-from services import rendering, translation
-from services.bubble_alignment import align_blocks_to_page_detections
-from services.translation import reset_translator_probe
+from config import (
+    BATCH_PAGE_SIZE,
+    CURSOR_PAGE_DELAY_SEC,
+    OUTPUT_DIR,
+    amount_cfa_for_bubbles,
+)
+from services import translation
 from services.chibie_commentary import (
     build_page_digest,
     generate_debrief_commentary,
@@ -22,8 +25,12 @@ from services.chibie_scan_research import (
     research_page_from_blocks,
 )
 from services.chibie_panel import append_chibie_footer, render_debrief_page
-from services.pdf_compiler import compile_pdf
-from services.storage import get_upload_dir, update_task
+from services.cleanup import purge_task_uploads
+from services.html_bubble_render import render_page_html_overlays
+from services.pdf_compiler import compile_pdf, merge_pdfs
+from services.scan_ingest import list_page_images
+from services.storage import get_task, get_upload_dir, update_task
+from services.translation import reset_translator_probe
 from services.transformation_report import (
     append_page,
     build_page_entry,
@@ -37,12 +44,23 @@ logger = logging.getLogger(__name__)
 MIN_PAGES_FOR_TOA = 3
 
 
+def _safe_error_message(exc: BaseException, limit: int = 500) -> str:
+    text = str(exc) or repr(exc)
+    return text.encode("utf-8", errors="replace").decode("utf-8")[:limit]
+
+
 def _set_progress(task_id: str, percent: int, message: str) -> None:
     update_task(
         task_id,
         progressPercent=min(99, max(0, percent)),
         progressMessage=message,
     )
+
+
+def _chunk_paths(paths: list[Path], size: int) -> list[list[Path]]:
+    if size <= 0:
+        return [paths]
+    return [paths[i : i + size] for i in range(0, len(paths), size)]
 
 
 def run_translation_pipeline(
@@ -59,7 +77,7 @@ def run_translation_pipeline(
             status="failed",
             progressPercent=0,
             progressMessage=None,
-            errorMessage=str(exc)[:500],
+            errorMessage=_safe_error_message(exc),
         )
 
 
@@ -80,31 +98,28 @@ def _run_pipeline(
     if pdf_path_existing.exists():
         pdf_path_existing.unlink()
 
-    image_paths = sorted(
-        p
-        for p in upload_dir.iterdir()
-        if p.suffix.lower() in {".png", ".jpg", ".jpeg"}
-    )
+    image_paths = list_page_images(upload_dir)
     total = len(image_paths)
     if total == 0:
-        raise ValueError("Aucune image à traiter.")
+        raise ValueError("Aucune page à traiter (PNG, JPG ou JPEG).")
+
+    batch_size = max(1, BATCH_PAGE_SIZE)
+    batches = _chunk_paths(image_paths, batch_size)
+    batch_count = len(batches)
 
     _set_progress(task_id, 5, "Préparation…")
     init_report(task_id, source_language, target_language)
     reset_translator_probe()
-    if is_ocr_fast_mode():
-        raise RuntimeError(
-            "Mode test OCR actif. Désactivez OCR_FAST_MODE dans backend/.env "
-            "puis redémarrez le serveur."
-        )
     if not translation.is_translator_available():
         raise RuntimeError(
-            "Service de traduction indisponible. Vérifiez la configuration "
-            "puis redémarrez le serveur."
+            "Service de traduction indisponible. Vérifiez CURSOR_API_KEY."
         )
-    _set_progress(task_id, 8, "Préparation terminée")
+    _set_progress(task_id, 8, f"Préparation — {total} page(s), lots de {batch_size}")
 
-    include_toa = total >= MIN_PAGES_FOR_TOA
+    task_cfg = get_task(task_id)
+    include_toa = (
+        (task_cfg.includeToa if task_cfg else True) and total >= MIN_PAGES_FOR_TOA
+    )
     chibie_scan_ctx = ChibieScanContext()
     if include_toa:
         _set_progress(task_id, 9, "Toa repère la série sur les scans…")
@@ -114,113 +129,136 @@ def _run_pipeline(
             max_pages=min(3, total),
         )
 
-    processed_images: list[Path] = []
     total_translated_bubbles = 0
-    effective_source = normalize_lang_code(source_language)
     story_so_far: list[str] = []
     page_width = 0
+    partial_pdfs: list[Path] = []
 
-    for page_idx, image_path in enumerate(image_paths):
-        page_num = page_idx + 1
-        base_pct = 10 + int((page_idx / total) * 75)
-
-        _set_progress(
-            task_id,
-            base_pct,
-            f"Page {page_num}/{total} — analyse visuelle…",
-        )
-        blocks, detected_lang = translation.detect_and_translate_full_page_with_cursor(
-            image_path,
-            source_language,
-            target_language,
-            session_id=task_id,
-            page_index=page_idx,
-        )
-        if source_language == "auto" and detected_lang:
-            effective_source = detected_lang
-            update_task(task_id, sourceLanguage=effective_source)
-        ocr_lang = resolve_ocr_language(source_language, effective_source)
-        _set_progress(
-            task_id,
-            base_pct + 2,
-            f"Page {page_num}/{total} — repérage des zones texte…",
-        )
-        blocks = align_blocks_to_page_detections(
-            image_path,
-            blocks,
-            ocr_lang,
-            page_idx,
-        )
-        total_translated_bubbles += len(blocks)
-        _set_progress(
-            task_id,
-            base_pct + 5,
-            f"Page {page_num}/{total} — traduction en cours…",
-        )
-
-        page_entry = build_page_entry(image_path, page_idx, blocks)
-        append_page(
-            task_id,
-            source_language=source_language,
-            target_language=target_language,
-            page_entry=page_entry,
-        )
-        log_disk_report(task_id, page_entry)
+    for batch_idx, batch_paths in enumerate(batches):
+        reset_translator_probe()
+        batch_session = f"{task_id}-batch-{batch_idx:04d}-{secrets.token_hex(4)}"
+        batch_images: list[Path] = []
+        batch_start = batch_idx * batch_size
 
         _set_progress(
             task_id,
-            base_pct + 12,
-            f"Page {page_num}/{total} — superposition du texte…",
+            10 + int((batch_idx / batch_count) * 72),
+            f"Lot {batch_idx + 1}/{batch_count} — démarrage (session isolée)…",
         )
-        out_path = processed_dir / f"page_{page_idx:04d}.png"
-        rendering.inpaint_and_render(
-            image_path, blocks, out_path, target_language
+        logger.info(
+            "Lot %s/%s pour %s (pages %s-%s)",
+            batch_idx + 1,
+            batch_count,
+            task_id,
+            batch_start + 1,
+            batch_start + len(batch_paths),
         )
 
-        if include_toa:
-            chibie_scan_ctx = research_page_from_blocks(
-                chibie_scan_ctx,
-                page_index=page_idx,
-                blocks=blocks,
-                session_id=task_id,
+        for local_idx, image_path in enumerate(batch_paths):
+            global_page_idx = batch_start + local_idx
+            if local_idx > 0 and CURSOR_PAGE_DELAY_SEC > 0:
+                time.sleep(CURSOR_PAGE_DELAY_SEC)
+
+            page_num = global_page_idx + 1
+            done_in_batch = local_idx + 1
+            progress_base = 10 + int(
+                ((batch_idx + (local_idx / max(1, len(batch_paths)))) / batch_count)
+                * 72
             )
+
             _set_progress(
                 task_id,
-                base_pct + 14,
-                f"Page {page_num}/{total} — avis de Toa…",
+                progress_base,
+                f"Lot {batch_idx + 1}/{batch_count} — page {done_in_batch}/{len(batch_paths)} "
+                f"(page {page_num}/{total})…",
             )
-            mood, chibie_comment = generate_page_commentary(
-                page_index=page_idx,
-                total_pages=total,
-                blocks=blocks,
-                story_so_far=story_so_far,
-                target_language=target_language,
-                session_id=task_id,
-                scan_context=chibie_scan_ctx,
+            blocks, detected_lang, page_css = (
+                translation.detect_and_translate_full_page_with_cursor(
+                    image_path,
+                    "auto",
+                    target_language,
+                    session_id=batch_session,
+                    page_index=local_idx,
+                )
             )
-            story_so_far.append(build_page_digest(page_idx, blocks))
+            if detected_lang:
+                update_task(task_id, sourceLanguage=detected_lang)
+            total_translated_bubbles += len(blocks)
 
-            final_page_path = processed_dir / f"page_{page_idx:04d}_final.png"
-            append_chibie_footer(
-                out_path,
-                final_page_path,
-                mood=mood,
-                comment=chibie_comment,
+            page_entry = build_page_entry(image_path, global_page_idx, blocks)
+            append_page(
+                task_id,
+                source_language=source_language,
+                target_language=target_language,
+                page_entry=page_entry,
             )
-            with Image.open(final_page_path) as fin:
+            log_disk_report(task_id, page_entry)
+
+            out_path = processed_dir / f"page_{global_page_idx:04d}.png"
+            render_page_html_overlays(
+                image_path,
+                blocks,
+                out_path,
+                page_css=page_css,
+            )
+
+            page_for_pdf = out_path
+            if include_toa:
+                chibie_scan_ctx = research_page_from_blocks(
+                    chibie_scan_ctx,
+                    page_index=global_page_idx,
+                    blocks=blocks,
+                    session_id=task_id,
+                )
+                _set_progress(
+                    task_id,
+                    progress_base + 2,
+                    f"Page {page_num}/{total} — avis de Toa…",
+                )
+                mood, chibie_comment = generate_page_commentary(
+                    page_index=global_page_idx,
+                    total_pages=total,
+                    blocks=blocks,
+                    story_so_far=story_so_far,
+                    target_language=target_language,
+                    session_id=task_id,
+                    scan_context=chibie_scan_ctx,
+                )
+                story_so_far.append(build_page_digest(global_page_idx, blocks))
+                final_page_path = processed_dir / f"page_{global_page_idx:04d}_final.png"
+                append_chibie_footer(
+                    out_path,
+                    final_page_path,
+                    mood=mood,
+                    comment=chibie_comment,
+                )
+                page_for_pdf = final_page_path
+            else:
+                story_so_far.append(build_page_digest(global_page_idx, blocks))
+
+            with Image.open(page_for_pdf) as fin:
                 page_width = max(page_width, fin.size[0])
-            processed_images.append(final_page_path)
-        else:
-            with Image.open(out_path) as fin:
-                page_width = max(page_width, fin.size[0])
-            processed_images.append(out_path)
+            batch_images.append(page_for_pdf)
+
+        partial_pdf = processed_dir / f"batch_{batch_idx:04d}.pdf"
+        _set_progress(
+            task_id,
+            10 + int(((batch_idx + 0.9) / batch_count) * 72),
+            f"Lot {batch_idx + 1}/{batch_count} — génération PDF partiel…",
+        )
+        compile_pdf(batch_images, partial_pdf)
+        partial_pdfs.append(partial_pdf)
+
+    pdfs_to_merge = list(partial_pdfs)
 
     if include_toa:
-        _set_progress(task_id, 90, "Debrief de Toa…")
+        _set_progress(task_id, 88, "Debrief de Toa…")
+        debrief_session = f"{task_id}-toa-debrief-{secrets.token_hex(4)}"
+        reset_translator_probe()
         debrief_mood, debrief_text = generate_debrief_commentary(
             story_so_far=story_so_far,
             target_language=target_language,
-            session_id=task_id,
+            session_id=debrief_session,
             scan_context=chibie_scan_ctx,
         )
         debrief_path = processed_dir / "page_toa_debrief.png"
@@ -230,20 +268,33 @@ def _run_pipeline(
             mood=debrief_mood,
             comment=debrief_text,
         )
-        processed_images.append(debrief_path)
+        toa_pdf = processed_dir / "batch_toa_debrief.pdf"
+        compile_pdf([debrief_path], toa_pdf)
+        pdfs_to_merge.append(toa_pdf)
 
-    _set_progress(task_id, 92, "Génération du PDF…")
-    pdf_path = OUTPUT_DIR / f"{task_id}.pdf"
-    compile_pdf(processed_images, pdf_path)
+    _set_progress(task_id, 92, "Fusion des PDF dans l'ordre…")
+    final_pdf = OUTPUT_DIR / f"{task_id}.pdf"
+    merge_pdfs(pdfs_to_merge, final_pdf)
 
+    task_final = get_task(task_id)
+    billed_bubbles = (
+        task_final.billableBubblesCount
+        if task_final and task_final.billableBubblesCount > 0
+        else total_translated_bubbles
+    )
     update_task(
         task_id,
         status="completed",
-        amountCFA=total_translated_bubbles * PRICE_PER_BUBBLE_CFA,
-        billableBubblesCount=total_translated_bubbles,
+        amountCFA=amount_cfa_for_bubbles(billed_bubbles),
         progressPercent=100,
         progressMessage="Terminé",
         errorMessage=None,
         pdfUrl=f"/api/tasks/{task_id}/pdf",
     )
-    logger.info("Pipeline terminé pour %s", task_id)
+    purge_task_uploads(task_id)
+    logger.info(
+        "Pipeline terminé pour %s (%s lots, %s pages)",
+        task_id,
+        batch_count,
+        total,
+    )

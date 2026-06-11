@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 
 from config import OUTPUT_DIR
 from models import TextBlock
-from services.translation import is_ocr_placeholder, is_translator_available
+from services.translation import is_translator_available
 
 logger = logging.getLogger(__name__)
 
@@ -128,23 +128,8 @@ def find_latest_report() -> dict | None:
     return reports[0]["report"]
 
 
-def report_has_test_placeholders(report: dict) -> bool:
-    for page in report.get("pages", []):
-        for bubble in page.get("bubbles", []):
-            if is_ocr_placeholder(bubble.get("originalText", "")):
-                return True
-    return False
-
-
-def _ocr_fast_mode_from_env() -> bool:
-    """Relit .env pour la bannière (sans redémarrer le serveur)."""
-    load_dotenv(override=True)
-    return os.getenv("OCR_FAST_MODE", "false").lower() in ("true", "1", "yes")
-
-
 def build_status_banner(report: dict | None) -> str:
-    ocr_fast = _ocr_fast_mode_from_env()
-    ocr_label = "OCR rapide (test)" if ocr_fast else "OCR complet (manga-ocr)"
+    del report
     translator_ok = is_translator_available()
     translator_class = "status-pill--ok" if translator_ok else "status-pill--err"
     translator_label = (
@@ -152,20 +137,10 @@ def build_status_banner(report: dict | None) -> str:
     )
 
     warnings: list[str] = []
-    if ocr_fast:
-        warnings.append(
-            "OCR_FAST_MODE=true : aucun texte japonais/coréen n'est lu. "
-            "Mettez OCR_FAST_MODE=false dans backend/.env puis redémarrez le backend."
-        )
     if not translator_ok:
         warnings.append(
             "CURSOR_API_KEY manquant ou invalide. Configurez la clé Cursor "
-            "dans backend/.env pour obtenir de vraies traductions."
-        )
-    if report and report_has_test_placeholders(report):
-        warnings.append(
-            "Cette tâche date du mode test. Cliquez « Nouvelle traduction » "
-            "sur le frontend et relancez un traitement."
+            "dans backend/.env."
         )
 
     warn_html = ""
@@ -175,7 +150,7 @@ def build_status_banner(report: dict | None) -> str:
 
     return f"""
     <aside class="status-banner" role="status">
-      <span class="status-pill">{_html_escape(ocr_label)}</span>
+      <span class="status-pill">Traduction 100 % Cursor</span>
       <span class="status-pill {translator_class}">{_html_escape(translator_label)}</span>
       {warn_html}
     </aside>
@@ -202,9 +177,9 @@ def log_disk_report(task_id: str, page_entry: dict) -> None:
     name = page_entry["imageName"]
     lines = [
         "",
-        "═" * 56,
+        "=" * 56,
         f"  DISQUE  {name}  ({n} bulle(s))",
-        "═" * 56,
+        "=" * 56,
     ]
     if n == 0:
         lines.append("  (aucune bulle)")
@@ -220,7 +195,7 @@ def log_disk_report(task_id: str, page_entry: dict) -> None:
             lines.append(f"{'':20}  TRG : {_truncate(bubble['translatedText'])}")
             lines.append("")
     lines.append(f"  Tâche {task_id[:8]}…")
-    lines.append("═" * 56)
+    lines.append("=" * 56)
     logger.info("\n".join(lines))
 
 

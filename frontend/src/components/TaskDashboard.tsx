@@ -3,6 +3,8 @@ import { getPdfDownloadUrl } from '../api/client';
 
 interface TaskDashboardProps {
   task: TranslationTask;
+  /** Dans la modale : pas de marge/card externe dupliquée */
+  embedded?: boolean;
 }
 
 const STATUS_LABELS: Record<TranslationTask['status'], string> = {
@@ -33,12 +35,14 @@ function resolveProgress(task: TranslationTask): number {
   return 0;
 }
 
-export function TaskDashboard({ task }: TaskDashboardProps) {
+export function TaskDashboard({ task, embedded = false }: TaskDashboardProps) {
   const progress = resolveProgress(task);
   const isActive = task.status === 'processing' || task.status === 'paid';
 
   return (
-    <div className="card toa-card toa-dashboard mt-4 border-0">
+    <div
+      className={`card toa-card toa-dashboard border-0 ${embedded ? '' : 'mt-4'}`}
+    >
       <div className="card-header d-flex justify-content-between align-items-center">
         <span>Tableau de bord — Tâche #{task.id.slice(0, 8)}</span>
         <span className={`badge text-bg-${STATUS_VARIANT[task.status]}`}>
@@ -72,8 +76,11 @@ export function TaskDashboard({ task }: TaskDashboardProps) {
             <strong>Montant :</strong> {task.amountCFA} FCFA
           </li>
           <li>
-            <strong>Langues :</strong> {task.sourceLanguage} →{' '}
-            {task.targetLanguage}
+            <strong>Langues :</strong>{' '}
+            {task.sourceLanguage === 'auto'
+              ? 'auto (Cursor)'
+              : task.sourceLanguage}{' '}
+            → {task.targetLanguage}
           </li>
         </ul>
 

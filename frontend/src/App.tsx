@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  confirmPayment,
   getAppConfig,
   getTask,
   initCheckout,
@@ -7,32 +8,28 @@ import {
   startProcessing,
   uploadImages,
 } from './api/client';
+import { dedupeFiles } from './utils/dedupeFiles';
 import { FileUploadZone } from './components/FileUploadZone';
 import { Footer } from './components/Footer';
 import { HeroBanner } from './components/HeroBanner';
 import { PriceSummary } from './components/PriceSummary';
-import { TaskDashboard } from './components/TaskDashboard';
-import {
-  SOURCE_LANGUAGE_OPTIONS,
-  TARGET_LANGUAGE_OPTIONS,
-} from './constants/languages';
-import type {
-  SourceLanguage,
-  TargetLanguage,
-  TranslationTask,
-} from './types/translation';
+import { TaskDashboardModal } from './components/TaskDashboardModal';
+import { TARGET_LANGUAGE_OPTIONS } from './constants/languages';
+import type { TargetLanguage, TranslationTask } from './types/translation';
 
 function App() {
   const [files, setFiles] = useState<File[]>([]);
-  const [sourceLanguage, setSourceLanguage] = useState<SourceLanguage>('auto');
   const [targetLanguage, setTargetLanguage] = useState<TargetLanguage>('fr');
   const [task, setTask] = useState<TranslationTask | null>(null);
   const [priceDisplayed, setPriceDisplayed] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [paymentDisabled, setPaymentDisabled] = useState(false);
-  const [pricePerBubble, setPricePerBubble] = useState(75);
+  const [priceBase, setPriceBase] = useState(200);
+  const [pricePerBubble, setPricePerBubble] = useState(25);
   const [uploadedFileKey, setUploadedFileKey] = useState<string | null>(null);
+  const [dashboardModalOpen, setDashboardModalOpen] = useState(false);
+  const [includeToa, setIncludeToa] = useState(true);
 
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const activeTaskIdRef = useRef<string | null>(null);
@@ -56,6 +53,7 @@ function App() {
     setFiles([]);
     setPriceDisplayed(false);
     setUploadedFileKey(null);
+    setDashboardModalOpen(false);
     setError(null);
     window.history.replaceState({}, '', window.location.pathname);
     try {
@@ -90,7 +88,7 @@ function App() {
           msg.includes('NetworkError')
         ) {
           setError(
-            'Backend injoignable. Vérifiez que le serveur tourne sur http://127.0.0.1:8000',
+            'Backend injoignable. Vérifiez que le serveur tourne sur http://127.0.0.1:9400',
           );
         }
         stopPolling();
@@ -109,23 +107,75 @@ function App() {
   );
 
   useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const returnTaskId = params.get('task_id');
+    const cancelled = params.get('cancelled');
+    const paidReturn = params.get('paid_return');
+
     getAppConfig()
       .then((cfg) => {
         setPaymentDisabled(cfg.paymentDisabled);
-        setPricePerBubble(cfg.pricePerBubbleCFA || 75);
+        setPriceBase(cfg.priceBaseCFA ?? 200);
+        setPricePerBubble(cfg.pricePerBubbleCFA ?? 25);
       })
       .catch(() => {
         setPaymentDisabled(false);
-        setPricePerBubble(75);
+        setPriceBase(200);
+        setPricePerBubble(25);
       });
-    window.history.replaceState({}, '', window.location.pathname);
+
+    if (returnTaskId && cancelled) {
+      setError('Paiement annulé. Vous pouvez réessayer quand vous le souhaitez.');
+      getTask(returnTaskId)
+        .then((t) => {
+          setTask(t);
+          setPriceDisplayed(true);
+        })
+        .catch(() => {
+          /* tâche expirée */
+        });
+      window.history.replaceState({}, '', window.location.pathname);
+    } else if (returnTaskId && paidReturn) {
+      setLoading(true);
+      setDashboardModalOpen(true);
+      confirmPayment(returnTaskId)
+        .then(({ task: confirmed, paymentPending }) => {
+          setTask(confirmed);
+          setPriceDisplayed(true);
+          if (paymentPending) {
+            setError(
+              'Paiement en attente de confirmation. Réessayez dans quelques secondes.',
+            );
+          } else if (
+            confirmed.status === 'processing' ||
+            confirmed.status === 'paid'
+          ) {
+            startPolling(returnTaskId);
+          }
+        })
+        .catch((err) => {
+          setError(
+            err instanceof Error
+              ? err.message
+              : 'Impossible de confirmer le paiement.',
+          );
+        })
+        .finally(() => {
+          setLoading(false);
+          window.history.replaceState({}, '', window.location.pathname);
+        });
+    } else {
+      window.history.replaceState({}, '', window.location.pathname);
+    }
+
     return () => stopPolling();
-  }, [stopPolling]);
+  }, [startPolling, stopPolling]);
 
   const handleFilesChange = (newFiles: File[]) => {
+    const deduped = dedupeFiles(newFiles);
     if (
       task &&
-      buildFileKey(newFiles) !== buildFileKey(files) &&
+      buildFileKey(deduped) !== buildFileKey(files) &&
       task.status !== 'processing' &&
       task.status !== 'paid'
     ) {
@@ -135,11 +185,12 @@ function App() {
       setUploadedFileKey(null);
       setError(null);
     }
-    setFiles(newFiles);
+    setFiles(deduped);
   };
 
   const handleEvaluate = async () => {
-    if (files.length === 0) {
+    const uniqueFiles = dedupeFiles(files);
+    if (uniqueFiles.length === 0) {
       setError('Ajoutez au moins une image.');
       return;
     }
@@ -153,15 +204,18 @@ function App() {
 
     try {
       await resetServerSession();
+      if (uniqueFiles.length !== files.length) {
+        setFiles(uniqueFiles);
+      }
       const { task: newTask, paymentDisabled: noPayment } = await uploadImages(
-        files,
-        sourceLanguage,
+        uniqueFiles,
         targetLanguage,
+        includeToa,
       );
       setTask(newTask);
       setPaymentDisabled(noPayment);
       setPriceDisplayed(true);
-      setUploadedFileKey(buildFileKey(files));
+      setUploadedFileKey(buildFileKey(uniqueFiles));
     } catch (err) {
       setError(
         err instanceof Error ? err.message : "Erreur lors de l'upload.",
@@ -182,6 +236,7 @@ function App() {
     }
     setLoading(true);
     setError(null);
+    setDashboardModalOpen(true);
     try {
       const { task: updated } = await startProcessing(task.id);
       setTask(updated);
@@ -195,6 +250,13 @@ function App() {
 
   const handlePay = async () => {
     if (!task || !priceDisplayed) return;
+    const currentKey = buildFileKey(files);
+    if (!uploadedFileKey || currentKey !== uploadedFileKey) {
+      setError(
+        "Les images ont changé. Cliquez d'abord sur « Évaluer le prix » pour envoyer les nouveaux fichiers.",
+      );
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
@@ -226,55 +288,38 @@ function App() {
           <div className="card-body p-4">
             <div className="d-flex align-items-center justify-content-between gap-2 mb-1">
               <h1 className="h4 mb-0">Nouvelle traduction</h1>
-              {paymentDisabled && (
+              {paymentDisabled ? (
                 <span className="badge toa-badge-test">Mode test</span>
+              ) : (
+                <span className="badge bg-warning text-dark">PayDunya test</span>
               )}
             </div>
             <p className="toa-text-muted small mb-4">
               Uploadez vos pages, payez, puis téléchargez votre PDF traduit.
             </p>
 
-            <div className="row g-3 mb-4">
-              <div className="col-md-6">
-                <label className="form-label">Langue source</label>
-                <select
-                  className="form-select toa-form-select"
-                  value={sourceLanguage}
-                  onChange={(e) =>
-                    setSourceLanguage(e.target.value as SourceLanguage)
-                  }
-                  disabled={
-                    loading ||
-                    (!!task && task.status !== 'pending_payment')
-                  }
-                >
-                  {SOURCE_LANGUAGE_OPTIONS.map((opt) => (
-                    <option key={opt.code} value={opt.code}>
-                      {opt.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div className="col-md-6">
-                <label className="form-label">Langue cible</label>
-                <select
-                  className="form-select toa-form-select"
-                  value={targetLanguage}
-                  onChange={(e) =>
-                    setTargetLanguage(e.target.value as TargetLanguage)
-                  }
-                  disabled={
-                    loading ||
-                    (!!task && task.status !== 'pending_payment')
-                  }
-                >
-                  {TARGET_LANGUAGE_OPTIONS.map((opt) => (
-                    <option key={opt.code} value={opt.code}>
-                      {opt.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
+            <div className="mb-4">
+              <label className="form-label">Langue cible</label>
+              <select
+                className="form-select toa-form-select"
+                value={targetLanguage}
+                onChange={(e) =>
+                  setTargetLanguage(e.target.value as TargetLanguage)
+                }
+                disabled={
+                  loading || (!!task && task.status !== 'pending_payment')
+                }
+              >
+                {TARGET_LANGUAGE_OPTIONS.map((opt) => (
+                  <option key={opt.code} value={opt.code}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+              <p className="small toa-text-muted mt-2 mb-0">
+                La langue source est détectée automatiquement par Cursor sur
+                vos pages.
+              </p>
             </div>
 
             <FileUploadZone
@@ -286,6 +331,23 @@ function App() {
                 task?.status === 'paid'
               }
             />
+
+            <div className="form-check mt-3">
+              <input
+                className="form-check-input"
+                type="checkbox"
+                id="includeToa"
+                checked={includeToa}
+                onChange={(e) => setIncludeToa(e.target.checked)}
+                disabled={
+                  loading ||
+                  (!!task && task.status !== 'pending_payment')
+                }
+              />
+              <label className="form-check-label" htmlFor="includeToa">
+                Ajouter Toa (le Chibie)
+              </label>
+            </div>
 
             {task && (
               <button
@@ -311,7 +373,11 @@ function App() {
 
             {priceDisplayed && task && (
               <>
-                <PriceSummary task={task} pricePerBubble={pricePerBubble} />
+                <PriceSummary
+                  task={task}
+                  priceBase={priceBase}
+                  pricePerBubble={pricePerBubble}
+                />
                 <p className="small text-muted mb-0">
                   Tâche #{task.id.slice(0, 8)}
                 </p>
@@ -322,9 +388,7 @@ function App() {
                     onClick={handleStartTest}
                     disabled={loading}
                   >
-                    {loading
-                      ? 'Démarrage…'
-                      : 'Lancer la traduction (mode test)'}
+                    {loading ? 'Démarrage…' : 'Démarrer la traduction'}
                   </button>
                 )}
                 {canPay && (
@@ -348,12 +412,16 @@ function App() {
           </div>
         </div>
 
-        {task && (task.status !== 'pending_payment' || priceDisplayed) && (
-          <TaskDashboard task={task} />
+        {task && dashboardModalOpen && (
+          <TaskDashboardModal
+            task={task}
+            open={dashboardModalOpen}
+            onClose={() => setDashboardModalOpen(false)}
+          />
         )}
 
         <p className="text-center toa-meta small mt-4 mb-0">
-          {pricePerBubble} FCFA / bulle
+          {priceBase} FCFA de base + {pricePerBubble} FCFA / bulle
         </p>
       </main>
 

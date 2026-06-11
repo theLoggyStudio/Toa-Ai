@@ -15,14 +15,25 @@ export function FileUploadZone({
 }: FileUploadZoneProps) {
   const onDrop = useCallback(
     (accepted: File[]) => {
-      onFilesChange([...files, ...accepted]);
+      const merged = [...files, ...accepted];
+      const seen = new Set<string>();
+      const unique = merged.filter((file) => {
+        const key = `${file.name}:${file.size}:${file.lastModified}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+      onFilesChange(unique);
     },
     [files, onFilesChange],
   );
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
-    accept: { 'image/png': ['.png'], 'image/jpeg': ['.jpg', '.jpeg'] },
+    accept: {
+      'image/png': ['.png'],
+      'image/jpeg': ['.jpg', '.jpeg'],
+    },
     disabled,
   });
 
@@ -47,7 +58,7 @@ export function FileUploadZone({
         <p className="mb-0">
           {isDragActive
             ? 'Déposez vos scans ici…'
-            : 'Glissez-déposez vos pages manga (PNG, JPEG) ou cliquez pour parcourir'}
+            : 'Glissez-déposez vos pages (PNG, JPG, JPEG) ou cliquez pour parcourir'}
         </p>
       </div>
 

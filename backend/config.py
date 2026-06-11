@@ -1,7 +1,23 @@
 import os
+import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
+
+
+def configure_utf8_stdio() -> None:
+    """Evite UnicodeEncodeError (█, etc.) sur la console Windows (cp1252)."""
+    os.environ.setdefault("PYTHONUTF8", "1")
+    os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except (OSError, ValueError):
+                pass
+
+
+configure_utf8_stdio()
 
 # override=True : relit .env après chaque modification (évite OCR_FAST_MODE bloqué)
 load_dotenv(override=True)
@@ -29,16 +45,21 @@ DATA_DIR = BASE_DIR / "data"
 UPLOAD_DIR = DATA_DIR / "uploads"
 OUTPUT_DIR = DATA_DIR / "outputs"
 
-# Nouveau tarif: par bulle traduite (fallback legacy: PRICE_PER_PAGE_CFA).
+# Tarif : forfait de base + montant par bulle (ex. 200 + 25 × n).
+PRICE_BASE_CFA = int(os.getenv("PRICE_BASE_CFA", "200"))
 PRICE_PER_BUBBLE_CFA = int(
-    os.getenv("PRICE_PER_BUBBLE_CFA", os.getenv("PRICE_PER_PAGE_CFA", "75"))
+    os.getenv("PRICE_PER_BUBBLE_CFA", os.getenv("PRICE_PER_PAGE_CFA", "25"))
 )
 
+
+def amount_cfa_for_bubbles(bubble_count: int) -> int:
+    """Montant total = forfait de base + (bulles × tarif unitaire)."""
+    n = max(0, int(bubble_count))
+    return PRICE_BASE_CFA + n * PRICE_PER_BUBBLE_CFA
+
 MAX_BLOCKS_PER_PAGE = int(os.getenv("MAX_BLOCKS_PER_PAGE", "50"))
-
-# Mode test : pas de manga-ocr (évite téléchargement HF 500+ Mo)
-OCR_FAST_MODE = is_ocr_fast_mode()
-
+# Traitement par lots (pages max par passe Cursor + PDF partiel).
+BATCH_PAGE_SIZE = int(os.getenv("BATCH_PAGE_SIZE", "5"))
 DISABLE_PAYMENT = os.getenv("DISABLE_PAYMENT", "false").lower() in (
     "true",
     "1",
@@ -74,12 +95,23 @@ else:
     PAYDUNYA_PRIVATE_KEY = PAYDUNYA_TEST_PRIVATE_KEY
     PAYDUNYA_TOKEN = PAYDUNYA_TEST_TOKEN
 
-FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "http://localhost:5173")
-BACKEND_PUBLIC_URL = os.getenv("BACKEND_PUBLIC_URL", "http://127.0.0.1:8000")
+FRONTEND_PORT = int(os.getenv("FRONTEND_PORT", "3100"))
+BACKEND_PORT = int(os.getenv("BACKEND_PORT", "9400"))
+FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", f"http://localhost:{FRONTEND_PORT}")
+BACKEND_PUBLIC_URL = os.getenv(
+    "BACKEND_PUBLIC_URL", f"http://127.0.0.1:{BACKEND_PORT}"
+)
 
 CURSOR_API_KEY = os.getenv("CURSOR_API_KEY", "")
 CURSOR_MODEL = os.getenv("CURSOR_MODEL", "auto")
 CURSOR_WORKSPACE_DIR = os.getenv("CURSOR_WORKSPACE_DIR", str(BASE_DIR.parent))
+CURSOR_USE_CLOUD = os.getenv("CURSOR_USE_CLOUD", "true").lower() in (
+    "true",
+    "1",
+    "yes",
+)
+CURSOR_MAX_IMAGE_PX = int(os.getenv("CURSOR_MAX_IMAGE_PX", "1920"))
+CURSOR_PAGE_DELAY_SEC = float(os.getenv("CURSOR_PAGE_DELAY_SEC", "1.5"))
 
 PAYDUNYA_API_URL = "https://app.paydunya.com/sandbox-api/v1/checkout-invoice/create"
 if PAYDUNYA_MODE == "production":

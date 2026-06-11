@@ -113,3 +113,20 @@ def compile_pdf(image_paths: List[Path], output_pdf: Path) -> None:
                 png_buffer.close()
 
     c.save()
+
+
+def merge_pdfs(pdf_paths: List[Path], output_pdf: Path) -> None:
+    """Fusionne des PDF partiels dans l'ordre."""
+    from pypdf import PdfReader, PdfWriter
+
+    output_pdf.parent.mkdir(parents=True, exist_ok=True)
+    writer = PdfWriter()
+    for pdf_path in pdf_paths:
+        if not pdf_path.exists():
+            raise FileNotFoundError(f"PDF partiel introuvable: {pdf_path}")
+        reader = PdfReader(str(pdf_path))
+        for page in reader.pages:
+            writer.add_page(page)
+    with output_pdf.open("wb") as handle:
+        writer.write(handle)
+    logger.info("PDF fusionne: %s (%s parties)", output_pdf.name, len(pdf_paths))

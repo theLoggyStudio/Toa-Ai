@@ -30,6 +30,7 @@ def create_task(
     target_language: str,
     amount_cfa: int,
     billable_bubbles_count: int = 0,
+    include_toa: bool = True,
 ) -> TranslationTask:
     task_id = str(uuid.uuid4())
     task = TranslationTask(
@@ -40,6 +41,7 @@ def create_task(
         status="pending_payment",
         amountCFA=amount_cfa,
         billableBubblesCount=billable_bubbles_count,
+        includeToa=include_toa,
     )
     tasks = _load_tasks()
     tasks[task_id] = task.model_dump()
@@ -62,6 +64,7 @@ def get_task(task_id: str) -> Optional[TranslationTask]:
         status=raw["status"],
         amountCFA=raw["amountCFA"],
         billableBubblesCount=int(raw.get("billableBubblesCount", 0)),
+        includeToa=bool(raw.get("includeToa", True)),
         payduniaToken=raw.get("payduniaToken"),
         pdfUrl=raw.get("pdfUrl"),
         progressPercent=int(raw.get("progressPercent", 0)),

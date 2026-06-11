@@ -20,6 +20,7 @@ export interface TranslationTask {
   targetLanguage: TargetLanguage;
   status: TaskStatus;
   amountCFA: number;
+  includeToa?: boolean;
   payduniaToken?: string;
   pdfUrl?: string;
   progressPercent?: number;
@@ -41,6 +42,7 @@ export interface TextBlock {
 
 export interface AppConfig {
   paymentDisabled: boolean;
+  priceBaseCFA: number;
   pricePerBubbleCFA: number;
 }
 
@@ -58,4 +60,10 @@ export interface StartProcessingResponse {
 export interface CheckoutResponse {
   paymentUrl: string;
   token: string;
+}
+
+export interface ConfirmPaymentResponse {
+  task: TranslationTask;
+  paymentPending?: boolean;
+  alreadyStarted?: boolean;
 }

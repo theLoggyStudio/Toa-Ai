@@ -8,5 +8,6 @@ opencv-python-headless>=4.10.0
 numpy>=1.26.0
 Pillow>=10.4.0
 reportlab>=4.2.0
+pypdf>=5.0.0
 cursor-sdk>=0.1.0
-# OCR lourd : voir requirements-ml.txt et install-ml.ps1
+playwright>=1.48.0

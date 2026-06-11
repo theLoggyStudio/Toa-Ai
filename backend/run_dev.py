@@ -7,6 +7,10 @@ from pathlib import Path
 
 import uvicorn
 
+from config import BACKEND_PORT, configure_utf8_stdio
+
+configure_utf8_stdio()
+
 BACKEND_DIR = Path(__file__).resolve().parent
 RELOAD_DIRS = [
     str(BACKEND_DIR / "services"),
@@ -43,7 +47,7 @@ def main() -> None:
     kwargs: dict = {
         "app": "main:app",
         "host": "127.0.0.1",
-        "port": 8000,
+        "port": BACKEND_PORT,
         "reload": reload_on,
     }
     if reload_on:

@@ -54,6 +54,14 @@ body {
   flex-direction: column;
 }
 
+body:has(.modal.show) {
+  overflow: hidden;
+}
+
+.modal .toa-card .card-header {
+  border-bottom: 2px solid var(--toa-border);
+}
+
 .toa-pixel-img {
   image-rendering: pixelated;
   image-rendering: crisp-edges;

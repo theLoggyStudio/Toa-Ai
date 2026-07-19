@@ -107,7 +107,7 @@ export async function uploadImages(
   } catch (err) {
     if (err instanceof Error && err.name === 'AbortError') {
       throw new Error(
-        "L'évaluation Cursor prend trop de temps. Réessayez avec moins de pages.",
+        "L'envoi des images prend trop de temps. Réessayez avec moins de pages.",
       );
     }
     if (err instanceof TypeError) {
@@ -151,6 +151,65 @@ export async function getTask(taskId: string): Promise<TranslationTask> {
   return handleResponse<TranslationTask>(response);
 }
 
+export async function retryTask(
+  taskId: string,
+): Promise<StartProcessingResponse> {
+  const response = await fetchWithTimeout(
+    `${API_BASE}/api/tasks/${taskId}/retry`,
+    {
+      method: 'POST',
+      ...NO_CACHE,
+    },
+  );
+  return handleResponse<StartProcessingResponse>(response);
+}
+
+/**
+ * Suivi temps réel via Server-Sent Events.
+ * Retourne une fonction d'arrêt ; onFallback est appelé si le flux SSE échoue
+ * (l'appelant repasse alors au polling classique).
+ */
+export function subscribeTaskEvents(
+  taskId: string,
+  onTask: (task: TranslationTask) => void,
+  onDone: () => void,
+  onFallback: () => void,
+): () => void {
+  const source = new EventSource(`${API_BASE}/api/tasks/${taskId}/events`);
+  let receivedAny = false;
+
+  source.onmessage = (event) => {
+    receivedAny = true;
+    try {
+      const task = JSON.parse(event.data) as TranslationTask;
+      onTask(task);
+      if (task.status !== 'processing' && task.status !== 'paid') {
+        source.close();
+        onDone();
+      }
+    } catch {
+      /* message SSE illisible : ignoré */
+    }
+  };
+
+  source.onerror = () => {
+    source.close();
+    // Le serveur ferme le flux en fin de tâche : ce n'est un échec que si
+    // aucun événement n'a été reçu.
+    if (!receivedAny) {
+      onFallback();
+    } else {
+      onDone();
+    }
+  };
+
+  return () => source.close();
+}
+
 export function getPdfDownloadUrl(taskId: string): string {
   return `${API_BASE}/api/tasks/${taskId}/pdf?_=${Date.now()}`;
+}
+
+export function getPartialPdfDownloadUrl(taskId: string): string {
+  return `${API_BASE}/api/tasks/${taskId}/pdf/partial?_=${Date.now()}`;
 }

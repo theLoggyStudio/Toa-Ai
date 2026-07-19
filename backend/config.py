@@ -19,26 +19,8 @@ def configure_utf8_stdio() -> None:
 
 configure_utf8_stdio()
 
-# override=True : relit .env après chaque modification (évite OCR_FAST_MODE bloqué)
+# override=True : relit .env après chaque modification.
 load_dotenv(override=True)
-
-
-def is_ocr_fast_mode() -> bool:
-    load_dotenv(override=True)
-    return os.getenv("OCR_FAST_MODE", "false").lower() in (
-        "true",
-        "1",
-        "yes",
-    )
-
-
-def is_ocr_deep_mode() -> bool:
-    load_dotenv(override=True)
-    return os.getenv("OCR_DEEP_MODE", "true").lower() in (
-        "true",
-        "1",
-        "yes",
-    )
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
@@ -57,9 +39,32 @@ def amount_cfa_for_bubbles(bubble_count: int) -> int:
     n = max(0, int(bubble_count))
     return PRICE_BASE_CFA + n * PRICE_PER_BUBBLE_CFA
 
-MAX_BLOCKS_PER_PAGE = int(os.getenv("MAX_BLOCKS_PER_PAGE", "50"))
+
+# Estimation rapide à l'upload (sans appel Cursor) ; ajustée après traduction réelle.
+ESTIMATED_BUBBLES_PER_PAGE = max(1, int(os.getenv("ESTIMATED_BUBBLES_PER_PAGE", "4")))
+
+
+def estimate_bubbles_for_pages(page_count: int) -> int:
+    return max(1, page_count * ESTIMATED_BUBBLES_PER_PAGE)
+
 # Traitement par lots (pages max par passe Cursor + PDF partiel).
 BATCH_PAGE_SIZE = int(os.getenv("BATCH_PAGE_SIZE", "5"))
+# Pages traduites/rendues en parallèle dans un lot (appels Cursor = surtout de l'attente réseau).
+PIPELINE_PAGE_CONCURRENCY = max(1, int(os.getenv("PIPELINE_PAGE_CONCURRENCY", "3")))
+# Tâches traitées simultanément (au-delà : file d'attente).
+PIPELINE_MAX_CONCURRENT_TASKS = max(
+    1, int(os.getenv("PIPELINE_MAX_CONCURRENT_TASKS", "1"))
+)
+# Tentatives Cursor par page avant repli sur la page originale non traduite.
+PAGE_TRANSLATION_ATTEMPTS = max(1, int(os.getenv("PAGE_TRANSLATION_ATTEMPTS", "2")))
+
+# Mascotte Toa (Chibie) : désactivée pour l'instant, le code reste en place.
+# Remettre CHIBIE_ENABLED=true dans .env pour la réactiver.
+CHIBIE_ENABLED = os.getenv("CHIBIE_ENABLED", "false").lower() in (
+    "true",
+    "1",
+    "yes",
+)
 DISABLE_PAYMENT = os.getenv("DISABLE_PAYMENT", "false").lower() in (
     "true",
     "1",
@@ -111,7 +116,7 @@ CURSOR_USE_CLOUD = os.getenv("CURSOR_USE_CLOUD", "true").lower() in (
     "yes",
 )
 CURSOR_MAX_IMAGE_PX = int(os.getenv("CURSOR_MAX_IMAGE_PX", "1920"))
-CURSOR_PAGE_DELAY_SEC = float(os.getenv("CURSOR_PAGE_DELAY_SEC", "1.5"))
+CURSOR_PAGE_DELAY_SEC = float(os.getenv("CURSOR_PAGE_DELAY_SEC", "0.5"))
 
 PAYDUNYA_API_URL = "https://app.paydunya.com/sandbox-api/v1/checkout-invoice/create"
 if PAYDUNYA_MODE == "production":

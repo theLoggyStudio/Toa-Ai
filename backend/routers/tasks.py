@@ -1,3 +1,4 @@
+import asyncio
 import json
 import shutil
 from pathlib import Path
@@ -12,7 +13,8 @@ from fastapi import (
     Request,
     UploadFile,
 )
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 
 from config import (
     DISABLE_PAYMENT,
@@ -21,6 +23,7 @@ from config import (
     PRICE_BASE_CFA,
     PRICE_PER_BUBBLE_CFA,
     amount_cfa_for_bubbles,
+    estimate_bubbles_for_pages,
 )
 from languages import SUPPORTED_TARGET_CODES
 from models import (
@@ -34,7 +37,7 @@ from models import (
 )
 from services.transformation_report import load_report, render_html_report
 from services.cleanup import purge_all_tasks
-from services.translation import count_bubbles_with_cursor, is_translator_available
+from services.translation import is_translator_available
 from services.scan_ingest import SUPPORTED_UPLOAD_SUFFIXES, normalize_upload_dir
 from services.paydunya import (
     PayDunyaError,
@@ -98,9 +101,19 @@ def _dedupe_upload_files(files: List[UploadFile]) -> List[UploadFile]:
     return unique
 
 
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "testclient"})
+
+
 @router.post("/session/reset")
-async def reset_session():
-    """Efface toutes les tâches et fichiers avant une nouvelle évaluation."""
+async def reset_session(request: Request):
+    """Efface toutes les tâches et fichiers avant une nouvelle évaluation.
+
+    Action destructive : réservée aux requêtes locales (le backend tourne
+    sur la machine de l'utilisateur, son navigateur est donc en loopback).
+    """
+    client_host = request.client.host if request.client else ""
+    if client_host not in _LOOPBACK_HOSTS:
+        raise HTTPException(403, "Réinitialisation réservée à la machine locale.")
     purge_all_tasks()
     return {"ok": True, "message": "Session réinitialisée"}
 
@@ -118,6 +131,20 @@ def _parse_form_bool(value: str) -> bool:
     return str(value).strip().lower() in ("true", "1", "yes", "on")
 
 
+MAX_UPLOAD_FILE_BYTES = 20 * 1024 * 1024  # 20 Mo par image
+MAX_UPLOAD_TOTAL_BYTES = 300 * 1024 * 1024  # 300 Mo par requête
+MAX_UPLOAD_FILES = 200
+
+_IMAGE_MAGIC_PREFIXES: tuple[bytes, ...] = (
+    b"\x89PNG\r\n\x1a\n",  # PNG
+    b"\xff\xd8\xff",  # JPEG
+)
+
+
+def _is_real_image(data: bytes) -> bool:
+    return any(data.startswith(magic) for magic in _IMAGE_MAGIC_PREFIXES)
+
+
 @router.post("/tasks/upload", response_model=UploadResponse)
 async def upload_task(
     images: List[UploadFile] = File(...),
@@ -131,6 +158,8 @@ async def upload_task(
         raise HTTPException(400, "Aucun fichier fourni.")
 
     images = _dedupe_upload_files(images)
+    if len(images) > MAX_UPLOAD_FILES:
+        raise HTTPException(400, f"Trop d'images ({MAX_UPLOAD_FILES} max par envoi).")
 
     task = create_task(
         0,
@@ -143,6 +172,7 @@ async def upload_task(
     upload_dir = get_upload_dir(task.id)
     _clear_upload_dir(upload_dir)
 
+    total_bytes = 0
     for idx, upload in enumerate(images):
         suffix = (Path(upload.filename or "page.png").suffix or ".png").lower()
         if suffix not in SUPPORTED_UPLOAD_SUFFIXES:
@@ -150,8 +180,27 @@ async def upload_task(
                 400,
                 "Format non supporté. Utilisez PNG, JPG ou JPEG.",
             )
+        data = await upload.read()
+        if len(data) > MAX_UPLOAD_FILE_BYTES:
+            raise HTTPException(
+                400,
+                f"Image trop lourde ({upload.filename}). "
+                f"Maximum {MAX_UPLOAD_FILE_BYTES // (1024 * 1024)} Mo par fichier.",
+            )
+        total_bytes += len(data)
+        if total_bytes > MAX_UPLOAD_TOTAL_BYTES:
+            raise HTTPException(
+                400,
+                f"Envoi trop volumineux (max {MAX_UPLOAD_TOTAL_BYTES // (1024 * 1024)} Mo).",
+            )
+        if not _is_real_image(data):
+            raise HTTPException(
+                400,
+                f"Fichier invalide ({upload.filename}) : "
+                "le contenu n'est pas une image PNG ou JPEG.",
+            )
         dest = upload_dir / f"raw_{idx:04d}{suffix}"
-        dest.write_bytes(await upload.read())
+        dest.write_bytes(data)
 
     page_paths = normalize_upload_dir(upload_dir)
     if not page_paths:
@@ -163,32 +212,13 @@ async def upload_task(
             "Cursor indisponible. Verifiez CURSOR_API_KEY dans backend/.env.",
         )
 
-    sample_size = min(5, len(page_paths))
-    sample_paths = page_paths[:sample_size]
-    sample_bubbles = 0
-    detected_source: str | None = None
-    for page_idx, page_path in enumerate(sample_paths):
-        n, det = count_bubbles_with_cursor(
-            page_path,
-            session_id=task.id,
-            page_index=page_idx,
-        )
-        sample_bubbles += n
-        if det and not detected_source:
-            detected_source = det
-
-    avg_per_page = sample_bubbles / sample_size if sample_size else 0
-    estimated_bubbles = max(1, int(round(avg_per_page * len(page_paths))))
-
-    count = len(page_paths)
+    page_count = len(page_paths)
+    estimated_bubbles = estimate_bubbles_for_pages(page_count)
     amount = amount_cfa_for_bubbles(estimated_bubbles)
     update_task(
         task.id,
-        originalImagesCount=count,
-        sourceLanguage=detected_source or "auto",
-    )
-    update_task(
-        task.id,
+        originalImagesCount=page_count,
+        sourceLanguage="auto",
         amountCFA=amount,
         billableBubblesCount=estimated_bubbles,
     )
@@ -239,7 +269,7 @@ async def checkout(task_id: str, background_tasks: BackgroundTasks):
         raise HTTPException(400, "Cette tâche n'est pas en attente de paiement.")
 
     try:
-        token, payment_url = create_checkout_invoice(task)
+        token, payment_url = await run_in_threadpool(create_checkout_invoice, task)
     except PayDunyaError as exc:
         raise HTTPException(502, str(exc)) from exc
 
@@ -248,7 +278,7 @@ async def checkout(task_id: str, background_tasks: BackgroundTasks):
     if "mock_payment" in payment_url:
         background_tasks.add_task(_mock_payment_success, task_id, token)  # noqa: still uses thread via schedule
 
-    return CheckoutResponse(paymentUrl=payment_url, token=token)
+    return CheckoutResponse(paymentUrl=payment_url)
 
 
 @router.post(
@@ -275,7 +305,9 @@ async def confirm_payment(task_id: str):
         raise HTTPException(400, "Aucune facture PayDunya pour cette tâche.")
 
     try:
-        body = confirm_checkout_invoice(task.payduniaToken)
+        body = await run_in_threadpool(
+            confirm_checkout_invoice, task.payduniaToken
+        )
     except PayDunyaError as exc:
         raise HTTPException(502, str(exc)) from exc
 
@@ -304,6 +336,72 @@ async def task_status(task_id: str):
     if not task:
         raise HTTPException(404, "Tâche introuvable.")
     return task
+
+
+_SSE_ACTIVE_STATUSES = frozenset({"processing", "paid"})
+
+
+@router.get("/tasks/{task_id}/events")
+async def task_events(task_id: str):
+    """Flux SSE : pousse l'état de la tâche dès qu'il change (remplace le polling)."""
+    if not get_task(task_id):
+        raise HTTPException(404, "Tâche introuvable.")
+
+    async def stream():
+        last_payload: str | None = None
+        while True:
+            task = await run_in_threadpool(get_task, task_id)
+            if not task:
+                break
+            payload = task.model_dump_json()
+            if payload != last_payload:
+                last_payload = payload
+                yield f"data: {payload}\n\n"
+            if task.status not in _SSE_ACTIVE_STATUSES:
+                break
+            await asyncio.sleep(1.0)
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-store",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.post("/tasks/{task_id}/retry", response_model=StartProcessingResponse)
+async def retry_task(task_id: str):
+    """Relance une tâche échouée en reprenant depuis le checkpoint par page."""
+    task = get_task(task_id)
+    if not task:
+        raise HTTPException(404, "Tâche introuvable.")
+    if task.status != "failed":
+        raise HTTPException(400, "Seule une tâche échouée peut être relancée.")
+
+    from services.scan_ingest import list_page_images
+
+    if not list_page_images(get_upload_dir(task_id)):
+        raise HTTPException(
+            410,
+            "Les images source ne sont plus disponibles. "
+            "Relancez une nouvelle traduction.",
+        )
+
+    update_task(
+        task_id,
+        status="processing",
+        progressPercent=2,
+        progressMessage="Reprise du traitement…",
+        errorMessage=None,
+    )
+    schedule_pipeline(task_id, task.sourceLanguage, task.targetLanguage)
+    updated = get_task(task_id)
+    return StartProcessingResponse(
+        task=updated,  # type: ignore[arg-type]
+        message="Reprise démarrée",
+    )
 
 
 @router.get(
@@ -373,6 +471,26 @@ async def download_pdf(task_id: str):
     )
 
 
+@router.get("/tasks/{task_id}/pdf/partial")
+async def download_partial_pdf(task_id: str):
+    """PDF des lots déjà traduits, disponible pendant le traitement."""
+    task = get_task(task_id)
+    if not task:
+        raise HTTPException(404, "Tâche introuvable.")
+    partial = OUTPUT_DIR / f"{task_id}_partial.pdf"
+    if not partial.exists():
+        raise HTTPException(404, "Aucun PDF partiel disponible pour le moment.")
+    return FileResponse(
+        partial,
+        media_type="application/pdf",
+        filename=f"toa-ai-{task_id[:8]}-partiel.pdf",
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate",
+            "Pragma": "no-cache",
+        },
+    )
+
+
 @router.post("/webhooks/paydunya")
 async def paydunya_webhook(
     request: Request,
@@ -399,8 +517,17 @@ async def paydunya_webhook(
     if not task:
         raise HTTPException(404, "Tâche introuvable.")
 
-    if token and not verify_webhook_token(token, task_id):
-        raise HTTPException(403, "Token PayDunya invalide.")
+    # Token obligatoire : un webhook sans token ne doit jamais lancer le pipeline.
+    if not token or not verify_webhook_token(token, task_id):
+        raise HTTPException(403, "Token PayDunya manquant ou invalide.")
 
-    _start_pipeline_after_payment(task_id, token or None)
+    # Ne jamais faire confiance au statut du payload : re-confirmer côté PayDunya.
+    try:
+        body = await run_in_threadpool(confirm_checkout_invoice, token)
+    except PayDunyaError as exc:
+        raise HTTPException(502, str(exc)) from exc
+    if invoice_status_from_confirm(body) not in ("completed", "success"):
+        return {"received": True, "ignored": True, "reason": "non confirmé par PayDunya"}
+
+    _start_pipeline_after_payment(task_id, token)
     return {"received": True}

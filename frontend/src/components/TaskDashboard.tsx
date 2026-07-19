@@ -1,10 +1,12 @@
 import type { TranslationTask } from '../types/translation';
-import { getPdfDownloadUrl } from '../api/client';
+import { getPartialPdfDownloadUrl, getPdfDownloadUrl } from '../api/client';
 
 interface TaskDashboardProps {
   task: TranslationTask;
   /** Dans la modale : pas de marge/card externe dupliquée */
   embedded?: boolean;
+  /** Relance une tâche échouée (reprise depuis le checkpoint) */
+  onRetry?: () => void;
 }
 
 const STATUS_LABELS: Record<TranslationTask['status'], string> = {
@@ -35,7 +37,11 @@ function resolveProgress(task: TranslationTask): number {
   return 0;
 }
 
-export function TaskDashboard({ task, embedded = false }: TaskDashboardProps) {
+export function TaskDashboard({
+  task,
+  embedded = false,
+  onRetry,
+}: TaskDashboardProps) {
   const progress = resolveProgress(task);
   const isActive = task.status === 'processing' || task.status === 'paid';
 
@@ -95,13 +101,32 @@ export function TaskDashboard({ task, embedded = false }: TaskDashboardProps) {
           </a>
         )}
 
+        {isActive && task.partialPdfUrl && (
+          <a
+            href={getPartialPdfDownloadUrl(task.id)}
+            className="btn toa-btn-outline btn-sm"
+            download={`toa-ai-${task.id.slice(0, 8)}-partiel.pdf`}
+          >
+            Télécharger le PDF partiel (pages déjà traduites)
+          </a>
+        )}
+
         {task.status === 'failed' && (
           <div className="toa-alert-danger p-3 rounded">
             <p className="mb-1">Le traitement a échoué.</p>
             {task.errorMessage && (
-              <p className="small mb-0">
+              <p className="small mb-2">
                 <strong>Détail :</strong> {task.errorMessage}
               </p>
+            )}
+            {onRetry && (
+              <button
+                type="button"
+                className="btn toa-btn-primary btn-sm"
+                onClick={onRetry}
+              >
+                Reprendre là où ça s'est arrêté
+              </button>
             )}
           </div>
         )}

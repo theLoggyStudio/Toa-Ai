@@ -1,6 +1,5 @@
-@import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
-
 :root {
+  --toa-font-pixel: "Courier New", Consolas, monospace;
   --toa-taupe: #d2c5b8;
   --toa-taupe-dark: #b8a99a;
   --toa-brown: #4a3f35;
@@ -16,7 +15,7 @@
   --toa-text-on-dark: #f2ebe1;
   --toa-text-muted: #6b5d52;
   --toa-border: #4a3f35;
-  --toa-pixel-font: 'Press Start 2P', cursive;
+  --toa-pixel-font: var(--toa-font-pixel);
   --toa-body-font: 'Segoe UI', system-ui, sans-serif;
   --toa-shadow: 4px 4px 0 #2a241c;
   --toa-shadow-sm: 2px 2px 0 #2a241c;

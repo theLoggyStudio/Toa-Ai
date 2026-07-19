@@ -21,8 +21,8 @@ export interface TranslationTask {
   status: TaskStatus;
   amountCFA: number;
   includeToa?: boolean;
-  payduniaToken?: string;
   pdfUrl?: string;
+  partialPdfUrl?: string;
   progressPercent?: number;
   progressMessage?: string;
   errorMessage?: string;
@@ -59,7 +59,6 @@ export interface StartProcessingResponse {
 
 export interface CheckoutResponse {
   paymentUrl: string;
-  token: string;
 }
 
 export interface ConfirmPaymentResponse {

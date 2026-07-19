@@ -33,8 +33,10 @@ class TranslationTask(BaseModel):
     amountCFA: int
     billableBubblesCount: int = 0
     includeToa: bool = True
-    payduniaToken: Optional[str] = None
+    # exclude=True : jamais sérialisé vers le client (sert à vérifier le webhook).
+    payduniaToken: Optional[str] = Field(default=None, exclude=True)
     pdfUrl: Optional[str] = None
+    partialPdfUrl: Optional[str] = None
     progressPercent: int = 0
     progressMessage: Optional[str] = None
     errorMessage: Optional[str] = None
@@ -59,7 +61,6 @@ class StartProcessingResponse(BaseModel):
 
 class CheckoutResponse(BaseModel):
     paymentUrl: str
-    token: str
 
 
 class ConfirmPaymentResponse(BaseModel):

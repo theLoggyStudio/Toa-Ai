@@ -9,7 +9,10 @@ from pathlib import Path
 
 from languages import LANG_NAMES_FOR_PROMPT
 from models import TextBlock
-from services.chibie_scan_research import ChibieScanContext
+from services.chibie_scan_research import (
+    ChibieScanContext,
+    _parse_research_response,
+)
 from services.translation import _chat, is_translator_available
 
 logger = logging.getLogger(__name__)
@@ -54,6 +57,34 @@ Regles:
 
 Format STRICT (une seule ligne):
 MOOD|ce que Toa dit
+MOOD = un parmi: joie, rire, exiter, surprise, pensif, inquiet, peur, tristesse, colere, confus, degout, fier, soulager, fatiguer, timide"""
+
+CHIBIE_PAGE_COMBINED_SYSTEM = """Tu es Toa, mascotte de Toa AI qui suit un manga en direct.
+Ton prenom est Toa — tu peux t'y referer a la 1re ou 2e personne (« moi, Toa », « je »).
+INTERDIT ABSOLU d'ecrire « Chibie » ou « chibie » : parle toujours de toi comme « Toa » ou « je ».
+
+Tu fais DEUX taches en UNE seule reponse pour la page actuelle:
+
+TACHE A — Enrichir le contexte (anti-spoil strict):
+- N'ajoute que des noms explicitement presents dans les bulles de cette page.
+- Pas de deduction sur l'avenir de l'histoire, pas de connaissances externes.
+- Si un champ n'apporte rien de nouveau, omets la ligne.
+
+TACHE B — Commenter la page:
+1) Decide d'abord ce que Toa veut dire (avis, emotions, curiosite).
+2) Ensuite choisis MOOD: l'emotion doit correspondre EXACTEMENT au ton du commentaire.
+- Reponds dans la langue cible demandee.
+- 1 a 3 phrases courtes, ton vivant et sincere.
+- Utilise le contexte scan (titre, personnages deja repérés) sans spoil futur.
+- Ne repete pas ce que tu as deja dit sur les pages precedentes.
+- Pas de meta-technique (OCR, IA, PDF).
+
+Format STRICT (lignes A optionnelles, ligne COMMENT obligatoire en dernier):
+CHARACTERS_ADD|Nom1,Nom2
+CHAPTER|indice si nouveau
+ARC|indice si nouveau et explicite
+NOTES|precision courte si utile
+COMMENT|MOOD|ce que Toa dit
 MOOD = un parmi: joie, rire, exiter, surprise, pensif, inquiet, peur, tristesse, colere, confus, degout, fier, soulager, fatiguer, timide"""
 
 CHIBIE_DEBRIEF_SYSTEM = """Tu es Toa, mascotte de Toa AI. Tu viens de finir de lire toutes les pages fournies.
@@ -179,6 +210,69 @@ def generate_page_commentary(
     except Exception as exc:
         logger.warning("Toa page %s: %s", page_index, exc)
         return "pensif", "Wow… je veux absolument voir la suite !"
+
+
+def generate_page_context_and_commentary(
+    *,
+    ctx: ChibieScanContext,
+    page_index: int,
+    total_pages: int,
+    blocks: list[TextBlock],
+    story_so_far: list[str],
+    target_language: str,
+    session_id: str,
+) -> tuple[ChibieScanContext, str, str]:
+    """Un seul appel Cursor : enrichit le contexte ET commente la page.
+
+    Remplace le couple research_page_from_blocks + generate_page_commentary
+    (2 appels réseau → 1) pour accélérer l'option Toa.
+    """
+    fallback = ("pensif", "Wow… je veux absolument voir la suite !")
+    if not is_translator_available() or not blocks:
+        ctx.pages_analyzed = max(ctx.pages_analyzed, page_index + 1)
+        return ctx, *fallback
+
+    tgt = LANG_NAMES_FOR_PROMPT.get(target_language, target_language)
+    context = "\n".join(story_so_far[-5:]) if story_so_far else "(debut de l'histoire)"
+    page_lines = build_page_digest(page_index, blocks)
+    known = ", ".join(ctx.characters[:20]) if ctx.characters else "(aucun)"
+    scan_block = ctx.to_prompt_block() if ctx.pages_analyzed > 0 else ""
+
+    prompt = (
+        f"Langue cible: {tgt}\n"
+        f"Page actuelle: {page_index + 1}/{total_pages}\n\n"
+    )
+    if scan_block:
+        prompt += f"{scan_block}\n\n"
+    prompt += (
+        f"Personnages deja connus: {known}\n\n"
+        f"Contexte des pages precedentes:\n{context}\n\n"
+        f"Contenu de la page actuelle:\n{page_lines}\n\n"
+        "TACHE A: ajoute uniquement noms/indices NOUVEAUX et explicites de cette page.\n"
+        "TACHE B: formule le commentaire de Toa, puis choisis MOOD assorti.\n"
+        "Termine par la ligne COMMENT|MOOD|texte."
+    )
+    request_id = f"{session_id}-chibie-page-{page_index}-{secrets.token_hex(3)}"
+    try:
+        raw = _chat(prompt, request_id, system_prompt=CHIBIE_PAGE_COMBINED_SYSTEM)
+    except Exception as exc:
+        logger.warning("Toa page %s (combine): %s", page_index, exc)
+        ctx.pages_analyzed = max(ctx.pages_analyzed, page_index + 1)
+        return ctx, *fallback
+
+    data = _parse_research_response(raw)
+    comment_line = data.pop("COMMENT", "")
+    ctx.merge_parsed(data)
+    ctx.pages_analyzed = max(ctx.pages_analyzed, page_index + 1)
+
+    if comment_line:
+        mood, text = _parse_mood_line(comment_line)
+    else:
+        # Pas de ligne COMMENT : tente le format simple MOOD|texte.
+        mood, text = _parse_mood_line(raw)
+    if not text or text == "…":
+        mood, text = fallback
+    return ctx, mood, text
 
 
 def generate_debrief_commentary(

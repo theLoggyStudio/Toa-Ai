@@ -1,7 +1,9 @@
 """Traduction via Cursor API avec prompt expert BD."""
 
 import contextlib
+import hashlib
 import io
+import json
 import logging
 import os
 import re
@@ -25,43 +27,6 @@ from services import glossary_rag
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """Tu es un expert en localisation de bandes dessinées (manga/manhwa).
-
-REGLES CRITIQUES :
-- Chaque requete est isolee : traduis UNIQUEMENT le texte fourni, sans inventer de contexte.
-- Dialogue : traduction naturelle en francais, phrase complete, ton manga.
-- Onomatopee (katakana/hiragana courts, sons) : equivalences sensorielles FR, PAS de traduction litterale.
-  Exemples : ゴロゴロ/ゴロゴ = ronronnement → « Prrr… » ou « Ron-ron » (JAMAIS « Rouler »).
-  にゃー / ニャー = miaulement → « Miaou ! »
-- Conserve !! et l'intensite.
-- Reponds UNIQUEMENT : NUMERO|traduction (une ligne par bulle)."""
-
-SFX_SYSTEM_PROMPT = """Tu localises des onomatopees de manga vers le francais.
-Interdit : traduction mot a mot (ゴロゴロ ≠ Rouler, ドンドン ≠ Don).
-Donne une onomatopee ou expression FR courte (2-5 syllabes) qui evoque le MEME son.
-Reponds UNIQUEMENT par la traduction finale, sans guillemets ni explication."""
-
-SFX_CLASSIFIER_SYSTEM_PROMPT = """Tu es un classifieur de texte manga.
-Ta tache: dire si le texte est une ONOMATOPEE (SFX) ou un DIALOGUE.
-Regles:
-- Reponds UNIQUEMENT par SFX ou DIALOGUE.
-- Pas d'explication, pas de ponctuation supplementaire.
-- Si doute sur un texte tres court sonore (katakana/hiragana repetitif), reponds SFX."""
-
-OCR_REVIEW_SYSTEM_PROMPT = """Tu es un reviseur OCR manga.
-Objectif:
-- Corriger legerement les erreurs OCR evidentes pour chaque bulle.
-- Reordonner les bulles dans l'ordre de lecture naturel manga.
-
-Regles critiques:
-- N'invente aucun nouveau contenu.
-- Conserve la langue source (ja/ko), ne traduis pas.
-- Si incertitude, garde le texte OCR d'origine.
-- Retourne STRICTEMENT une ligne par bulle au format:
-  ID|ORDER|TEXTE_CORRIGE
-- ID doit etre celui fourni, ORDER est un entier unique 1..N.
-- Aucune autre ligne, aucun commentaire."""
-
 FULL_PAGE_VISION_SYSTEM_PROMPT = """Tu es un expert manga vision + traduction + mise en page HTML/CSS.
 Tu recois UNE PAGE COMPLETE de manga/manhwa.
 
@@ -82,6 +47,11 @@ Coordonnees OBLIGATOIRES (entiers pixels image):
 - x_min,y_min = coin haut-gauche de la zone
 - x_max,y_max = coin bas-droite
 - Zone serree sur la bulle ou l'onomatopee, sans couvrir l'art adjacent.
+- La bbox doit etre EXACTEMENT a l'endroit du texte dans le dessin.
+  JAMAIS dans les marges noires, les bords ou les coins de la page.
+- 0 <= x_min < x_max <= largeur image ; 0 <= y_min < y_max <= hauteur image.
+  Verifie chaque coordonnee avant de repondre : une coordonnee hors image
+  ou collee au bord droit/bas est une ERREUR.
 
 Traduction:
 - Dialogue: naturel, ton manga (ex. 大人買い → « Quel achat en bloc ! », PAS « achat d'adulte »).
@@ -99,14 +69,6 @@ Regles HTML:
 - Dialogue: fond blanc OPAQUE dans le HTML si besoin.
 - Onomatopees: pas de fond blanc, texte seul.
 - Une paire BUBBLE + HTML_B64 par zone."""
-
-COUNT_PAGE_BUBBLES_SYSTEM = """Tu es un expert manga vision.
-Detecte chaque bulle de dialogue ET chaque onomatopee SEPAREMENT.
-Ne fusionne jamais plusieurs zones en une seule bbox.
-Reponds STRICTEMENT (pas de markdown, pas de traduction, pas de HTML):
-SOURCE_LANG|code ISO (ja, ko, zh, en, …)
-BUBBLE|ORDER|X_MIN|Y_MIN|X_MAX|Y_MAX|TEXTE_SOURCE
-Une ligne BUBBLE par zone distincte (dialogue ou onomatopee)."""
 
 SFX_LEXICON: dict[tuple[str, str], dict[str, str]] = {
     ("ja", "fr"): {
@@ -147,43 +109,32 @@ SFX_LEXICON: dict[tuple[str, str], dict[str, str]] = {
     },
 }
 
-_LITERAL_SFX_MISTAKES_FR = frozenset(
-    {
-        "rouler",
-        "roule",
-        "roulez",
-        "son",
-        "bruit",
-        "goro",
-        "gorogoro",
-        "miaou son",
-    }
-)
-
 _translator_checked: bool | None = None
 _translator_available: bool = False
 
-_OCR_PLACEHOLDER_RE = re.compile(
-    r"^\[page\s+\d+\s+bulle\s+\d+\]$|^\(dialogue manga\)$",
-    re.IGNORECASE,
-)
+_env_mtime: float | None = None
 
 
-def _is_ocr_placeholder(text: str) -> bool:
-    return bool(_OCR_PLACEHOLDER_RE.match(text.strip()))
-
-
-def is_ocr_placeholder(text: str) -> bool:
-    return _is_ocr_placeholder(text)
+def _reload_env_if_changed() -> None:
+    """Relit .env uniquement s'il a changé (au lieu d'un load_dotenv par appel)."""
+    global _env_mtime
+    env_path = BASE_DIR / ".env"
+    try:
+        mtime = env_path.stat().st_mtime
+    except OSError:
+        return
+    if mtime != _env_mtime:
+        _env_mtime = mtime
+        load_dotenv(override=True)
 
 
 def _cursor_api_key() -> str:
-    load_dotenv(override=True)
+    _reload_env_if_changed()
     return os.getenv("CURSOR_API_KEY", CURSOR_API_KEY)
 
 
 def _cursor_model() -> str:
-    load_dotenv(override=True)
+    _reload_env_if_changed()
     model = os.getenv("CURSOR_MODEL", CURSOR_MODEL).strip()
     if not model or model.lower() == "auto":
         return "default"
@@ -191,13 +142,13 @@ def _cursor_model() -> str:
 
 
 def _cursor_workspace_dir() -> str:
-    load_dotenv(override=True)
+    _reload_env_if_changed()
     raw = os.getenv("CURSOR_WORKSPACE_DIR", CURSOR_WORKSPACE_DIR)
     return str(Path(raw).expanduser().resolve())
 
 
 def _cursor_use_cloud() -> bool:
-    load_dotenv(override=True)
+    _reload_env_if_changed()
     return os.getenv("CURSOR_USE_CLOUD", "true").lower() in ("true", "1", "yes")
 
 
@@ -264,7 +215,7 @@ def _chat(
     prompt: str,
     request_id: str,
     *,
-    system_prompt: str = SYSTEM_PROMPT,
+    system_prompt: str,
     images: list[Path] | None = None,
 ) -> str:
     _ensure_os_blocking_apis()
@@ -368,62 +319,6 @@ def _chat(
             time.sleep(2 * (attempt + 1))
 
     raise RuntimeError(f"Erreur Cursor API: {last_error}")
-
-
-def _fallback_translate(text: str, target_lang: str) -> str:
-    if not text.strip() or text.startswith("["):
-        return ""
-    if target_lang == "fr":
-        cleaned = re.sub(
-            r"[\u3040-\u30ff\u3400-\u9fff\uff00-\uffef]+", "", text
-        ).strip()
-        return cleaned if cleaned else ""
-    return text
-
-
-def _parse_numbered_response(raw: str, count: int) -> list[str]:
-    lines = raw.strip().splitlines()
-    result = [""] * count
-    for line in lines:
-        stripped = line.strip()
-        match = re.match(r"^(\d+)\s*[|:.\-)\]]\s*(.+)$", stripped)
-        if match:
-            idx = int(match.group(1)) - 1
-            if 0 <= idx < count:
-                result[idx] = match.group(2).strip()
-            continue
-        match2 = re.match(r"^(\d+)[.)]\s+(.+)$", stripped)
-        if match2:
-            idx = int(match2.group(1)) - 1
-            if 0 <= idx < count:
-                result[idx] = match2.group(2).strip()
-    non_empty = [r for r in result if r]
-    if len(non_empty) == 1 and count == 1:
-        result[0] = non_empty[0]
-    elif len(non_empty) >= count and not any(result):
-        for i in range(count):
-            if i < len(non_empty):
-                result[i] = non_empty[i]
-    return result
-
-
-def _parse_ocr_review_response(raw: str) -> tuple[dict[int, str], dict[int, int]]:
-    text_by_id: dict[int, str] = {}
-    order_by_id: dict[int, int] = {}
-    for line in raw.strip().splitlines():
-        stripped = line.strip()
-        if not stripped:
-            continue
-        match = re.match(r"^(\d+)\|(\d+)\|(.+)$", stripped)
-        if not match:
-            continue
-        block_id = int(match.group(1))
-        order = int(match.group(2))
-        text = match.group(3).strip()
-        if text:
-            text_by_id[block_id] = text
-            order_by_id[block_id] = order
-    return text_by_id, order_by_id
 
 
 def _decode_html_b64(payload: str) -> str:
@@ -614,19 +509,6 @@ def validate_full_page_blocks(
         )
 
 
-def _looks_like_sfx(text: str) -> bool:
-    t = text.strip()
-    if not t or len(t) > 18:
-        return False
-    if re.fullmatch(r"[\u30a0-\u30ff\u3040-\u309fー…・！？\sっ゛゜]+", t):
-        return True
-    if re.search(
-        r"(ゴロ|ドン|ガタ|にゃ|ニャ|わん|ワン|シーン|ぎゃ|ギャ|ずん|ズン)", t
-    ):
-        return True
-    return False
-
-
 def _lookup_sfx_lexicon(text: str, source_lang: str, target_lang: str) -> str | None:
     table = SFX_LEXICON.get((source_lang, target_lang), {})
     key = text.strip()
@@ -642,162 +524,59 @@ def _lookup_sfx_lexicon(text: str, source_lang: str, target_lang: str) -> str | 
     return None
 
 
-def _clean_translation(text: str, target_lang: str) -> str:
-    clean = text.strip()
-    clean = re.sub(r"^[\"'«»]+|[\"'«»]+$", "", clean).strip()
-    if target_lang in {"fr", "en", "es", "de", "pt", "it", "pl", "nl", "tr", "vi", "id"}:
-        clean = re.sub(
-            r"[\u3040-\u30ff\u3400-\u9fff\uff00-\uffef]+", "", clean
-        ).strip()
-    return clean
+# ---------------------------------------------------------------------------
+# Cache de traduction par page : évite de re-payer Cursor pour une page déjà
+# traduite (reprise après échec, re-upload du même scan, etc.).
+# ---------------------------------------------------------------------------
+
+_PAGE_CACHE_DIR = BASE_DIR / "data" / "cursor_cache" / "pages"
 
 
-def _reject_bad_sfx_translation(
-    source: str, translated: str, target_lang: str
-) -> bool:
-    if target_lang != "fr" or not _looks_like_sfx(source):
-        return False
-    low = translated.lower().strip(" .…!")
-    return low in _LITERAL_SFX_MISTAKES_FR
+def _page_cache_path(image_path: Path, target_lang: str) -> Path:
+    digest = hashlib.sha256(image_path.read_bytes()).hexdigest()[:40]
+    return _PAGE_CACHE_DIR / f"{digest}_{target_lang}.json"
 
 
-def _rag_context_block(
-    src: str, source_lang: str, target_lang: str
-) -> tuple[str, str | None]:
-    """Contexte RAG + traduction directe si dictionnaire manga."""
-    direct = glossary_rag.try_direct_translation(src, source_lang, target_lang)
-    hits = glossary_rag.retrieve_hits(src, source_lang, target_lang, limit=5)
-    ctx = glossary_rag.format_rag_context(hits, source_lang, target_lang)
-    return ctx, direct
-
-
-def _translate_one_block(
-    block: TextBlock,
-    source_lang: str,
-    target_lang: str,
-    request_id: str,
-    lang_map: dict[str, str],
-) -> str:
-    src = (block.originalText or "").strip()
-    if not src:
-        return ""
-
-    rag_ctx, rag_direct = _rag_context_block(src, source_lang, target_lang)
-    if rag_direct:
-        return rag_direct
-
-    lex = _lookup_sfx_lexicon(src, source_lang, target_lang)
-    if lex:
-        return lex
-
-    is_sfx = _is_sfx_with_cursor(
-        src,
-        source_lang=source_lang,
-        target_lang=target_lang,
-        request_id=request_id,
-    )
-    tgt_label = lang_map.get(target_lang, target_lang)
-    rag_section = f"\n\n{rag_ctx}\n" if rag_ctx else ""
-
-    if is_sfx:
-        prompt = (
-            f"Onomatopee manga ({lang_map.get(source_lang, source_lang)}) :\n"
-            f"« {src} »\n"
-            f"→ onomatopee {tgt_label} courte (ex. ronronnement = Prrr, miaulement = Miaou) :"
-            f"{rag_section}"
-        )
-        raw = _chat(prompt, f"{request_id}-sfx-{block.id}", system_prompt=SFX_SYSTEM_PROMPT)
-        text = _clean_translation(raw.splitlines()[0], target_lang)
-        if _reject_bad_sfx_translation(src, text, target_lang):
-            text = ""
-        if not text:
-            text = _lookup_sfx_lexicon(src, source_lang, target_lang) or ""
-        return text
-
-    prompt = (
-        f"Replique de dialogue manga ({lang_map.get(source_lang, source_lang)}) :\n"
-        f"« {src} »\n"
-        f"→ {tgt_label} (une seule phrase naturelle, sans numero ni commentaire) :"
-        f"{rag_section}"
-    )
-    raw = _chat(prompt, f"{request_id}-d-{block.id}")
-    line = raw.strip().splitlines()[0]
-    line = re.sub(r"^\d+\s*[|:.\-)\]]\s*", "", line).strip()
-    return _clean_translation(line, target_lang)
-
-
-def _is_sfx_with_cursor(
-    text: str,
-    *,
-    source_lang: str,
-    target_lang: str,
-    request_id: str,
-) -> bool:
-    """Laisse Cursor decider SFX vs dialogue; fallback regex local si besoin."""
-    src = text.strip()
-    if not src:
-        return False
-
-    # Heuristique ultra-courte locale (evite appel API inutile)
-    if _looks_like_sfx(src) and len(src) <= 4:
-        return True
-
-    prompt = (
-        f"Langue source: {source_lang}\n"
-        f"Langue cible: {target_lang}\n"
-        f"Texte manga:\n« {src} »\n\n"
-        "Est-ce une onomatopee (effet sonore) ou un dialogue ?"
-    )
-    try:
-        verdict = _chat(
-            prompt,
-            f"{request_id}-classify-sfx",
-            system_prompt=SFX_CLASSIFIER_SYSTEM_PROMPT,
-        ).strip().upper()
-        if "SFX" in verdict:
-            return True
-        if "DIALOGUE" in verdict:
-            return False
-    except Exception:
-        pass
-
-    return _looks_like_sfx(src)
-
-
-def count_bubbles_with_cursor(
+def _load_cached_page(
     image_path: Path,
-    *,
-    session_id: str = "",
-    page_index: int = 0,
-) -> tuple[int, str | None]:
-    """Compte les bulles via vision Cursor (tarification a l'upload)."""
-    if not is_translator_available():
-        raise RuntimeError("Cursor indisponible pour l'estimation des bulles.")
+    target_lang: str,
+    page_index: int,
+) -> tuple[list[TextBlock], str, str] | None:
+    try:
+        cache_file = _page_cache_path(image_path, target_lang)
+        if not cache_file.exists():
+            return None
+        data = json.loads(cache_file.read_text(encoding="utf-8"))
+        blocks = [TextBlock(**raw) for raw in data["blocks"]]
+        # Ré-identifie les blocs pour la page courante (l'id encode la page).
+        blocks = [
+            b.model_copy(update={"id": page_index * 1000 + i})
+            for i, b in enumerate(blocks)
+        ]
+        return blocks, data["detectedLang"], data.get("pageCss", "")
+    except Exception:
+        return None
 
-    from PIL import Image
 
-    with Image.open(image_path) as img:
-        width, height = img.size
-
-    request_id = f"{session_id}-p{page_index}-{secrets.token_hex(4)}-count"
-    prompt = (
-        f"Dimensions image: {width}x{height}\n"
-        "Compte toutes les zones de texte visibles sur la page jointe.\n"
-        "Reponds avec SOURCE_LANG puis une ligne BUBBLE par zone."
-    )
-    raw = _chat(
-        prompt,
-        request_id,
-        system_prompt=COUNT_PAGE_BUBBLES_SYSTEM,
-        images=[image_path],
-    )
-    blocks, detected_lang, _ = _parse_full_page_response(
-        raw,
-        width=width,
-        height=height,
-        page_index=page_index,
-    )
-    return len(blocks), detected_lang
+def _store_cached_page(
+    image_path: Path,
+    target_lang: str,
+    blocks: list[TextBlock],
+    detected_lang: str,
+    page_css: str,
+) -> None:
+    try:
+        _PAGE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "blocks": [b.model_dump() for b in blocks],
+            "detectedLang": detected_lang,
+            "pageCss": page_css,
+        }
+        _page_cache_path(image_path, target_lang).write_text(
+            json.dumps(payload, ensure_ascii=False), encoding="utf-8"
+        )
+    except Exception as exc:
+        logger.debug("Cache page non écrit: %s", exc)
 
 
 def _scale_blocks_to_image_size(
@@ -855,6 +634,11 @@ def detect_and_translate_full_page_with_cursor(
     with Image.open(image_path) as img:
         width, height = img.size
 
+    cached = _load_cached_page(image_path, target_lang, page_index)
+    if cached:
+        logger.info("Page %s servie depuis le cache de traduction", image_path.name)
+        return cached
+
     prepared_path = _prepare_cursor_image(image_path)
     with Image.open(prepared_path) as sent_img:
         sent_width, sent_height = sent_img.size
@@ -898,17 +682,5 @@ def detect_and_translate_full_page_with_cursor(
         raise RuntimeError("Impossible de detecter la langue source de la page.")
     blocks = _apply_glossary_corrections(blocks, detected_lang, target_lang)
     validate_full_page_blocks(blocks, detected_lang, target_lang)
+    _store_cached_page(image_path, target_lang, blocks, detected_lang, page_css)
     return blocks, detected_lang, page_css
-
-
-# Compatibilite API (historique)
-def get_ollama_status() -> dict:
-    return get_translator_status()
-
-
-def is_ollama_available() -> bool:
-    return is_translator_available()
-
-
-def reset_ollama_probe() -> None:
-    reset_translator_probe()

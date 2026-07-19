@@ -5,7 +5,9 @@ import {
   getTask,
   initCheckout,
   resetServerSession,
+  retryTask,
   startProcessing,
+  subscribeTaskEvents,
   uploadImages,
 } from './api/client';
 import { dedupeFiles } from './utils/dedupeFiles';
@@ -16,6 +18,10 @@ import { PriceSummary } from './components/PriceSummary';
 import { TaskDashboardModal } from './components/TaskDashboardModal';
 import { TARGET_LANGUAGE_OPTIONS } from './constants/languages';
 import type { TargetLanguage, TranslationTask } from './types/translation';
+
+// Mascotte Toa (Chibie) : désactivée pour l'instant, le code reste en place.
+// Repasser à true (et CHIBIE_ENABLED=true côté backend) pour la réactiver.
+const TOA_FEATURE_ENABLED = false;
 
 function App() {
   const [files, setFiles] = useState<File[]>([]);
@@ -29,10 +35,11 @@ function App() {
   const [pricePerBubble, setPricePerBubble] = useState(25);
   const [uploadedFileKey, setUploadedFileKey] = useState<string | null>(null);
   const [dashboardModalOpen, setDashboardModalOpen] = useState(false);
-  const [includeToa, setIncludeToa] = useState(true);
+  const [includeToa, setIncludeToa] = useState(TOA_FEATURE_ENABLED);
 
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const activeTaskIdRef = useRef<string | null>(null);
+  const sseCloseRef = useRef<(() => void) | null>(null);
 
   const buildFileKey = (fileList: File[]) =>
     fileList
@@ -43,6 +50,10 @@ function App() {
     if (pollTimerRef.current) {
       clearTimeout(pollTimerRef.current);
       pollTimerRef.current = null;
+    }
+    if (sseCloseRef.current) {
+      sseCloseRef.current();
+      sseCloseRef.current = null;
     }
     activeTaskIdRef.current = null;
   }, []);
@@ -101,10 +112,46 @@ function App() {
     (taskId: string) => {
       stopPolling();
       activeTaskIdRef.current = taskId;
-      pollTask(taskId);
+      // Suivi temps réel en SSE ; repli sur le polling si le flux échoue.
+      sseCloseRef.current = subscribeTaskEvents(
+        taskId,
+        (updated) => {
+          if (activeTaskIdRef.current !== taskId) return;
+          setTask(updated);
+        },
+        () => {
+          if (activeTaskIdRef.current !== taskId) return;
+          sseCloseRef.current = null;
+          stopPolling();
+          setUploadedFileKey(null);
+        },
+        () => {
+          if (activeTaskIdRef.current !== taskId) return;
+          sseCloseRef.current = null;
+          pollTask(taskId);
+        },
+      );
     },
     [pollTask, stopPolling],
   );
+
+  const handleRetry = useCallback(async () => {
+    if (!task) return;
+    setError(null);
+    setLoading(true);
+    setDashboardModalOpen(true);
+    try {
+      const { task: updated } = await retryTask(task.id);
+      setTask(updated);
+      startPolling(updated.id);
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : 'Impossible de reprendre la tâche.',
+      );
+    } finally {
+      setLoading(false);
+    }
+  }, [task, startPolling]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -332,22 +379,24 @@ function App() {
               }
             />
 
-            <div className="form-check mt-3">
-              <input
-                className="form-check-input"
-                type="checkbox"
-                id="includeToa"
-                checked={includeToa}
-                onChange={(e) => setIncludeToa(e.target.checked)}
-                disabled={
-                  loading ||
-                  (!!task && task.status !== 'pending_payment')
-                }
-              />
-              <label className="form-check-label" htmlFor="includeToa">
-                Ajouter Toa (le Chibie)
-              </label>
-            </div>
+            {TOA_FEATURE_ENABLED && (
+              <div className="form-check mt-3">
+                <input
+                  className="form-check-input"
+                  type="checkbox"
+                  id="includeToa"
+                  checked={includeToa}
+                  onChange={(e) => setIncludeToa(e.target.checked)}
+                  disabled={
+                    loading ||
+                    (!!task && task.status !== 'pending_payment')
+                  }
+                />
+                <label className="form-check-label" htmlFor="includeToa">
+                  Ajouter Toa (le Chibie)
+                </label>
+              </div>
+            )}
 
             {task && (
               <button
@@ -417,6 +466,7 @@ function App() {
             task={task}
             open={dashboardModalOpen}
             onClose={() => setDashboardModalOpen(false)}
+            onRetry={handleRetry}
           />
         )}
 

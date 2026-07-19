@@ -5,12 +5,14 @@ interface TaskDashboardModalProps {
   task: TranslationTask;
   open: boolean;
   onClose: () => void;
+  onRetry?: () => void;
 }
 
 export function TaskDashboardModal({
   task,
   open,
   onClose,
+  onRetry,
 }: TaskDashboardModalProps) {
   const canClose =
     task.status === 'completed' ||
@@ -46,7 +48,7 @@ export function TaskDashboardModal({
               )}
             </div>
             <div className="modal-body pt-2">
-              <TaskDashboard task={task} embedded />
+              <TaskDashboard task={task} embedded onRetry={onRetry} />
             </div>
           </div>
         </div>

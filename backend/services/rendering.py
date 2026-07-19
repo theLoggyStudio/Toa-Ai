@@ -108,6 +108,13 @@ def _looks_like_sfx_text(text: str) -> bool:
     return False
 
 
+_CJK_RE = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af\uff66-\uff9f]")
+
+
+def _has_cjk(text: str) -> bool:
+    return bool(_CJK_RE.search(text or ""))
+
+
 def _is_tall_bbox(bb: BoundingBox) -> bool:
     bw = max(1, bb.x_max - bb.x_min)
     bh = max(1, bb.y_max - bb.y_min)
@@ -216,6 +223,225 @@ def _align_render_bbox(
     return _union_bbox(cursor_bb, centered, width, height)
 
 
+def detect_bubble_region(
+    base_bgr: np.ndarray, bb: BoundingBox
+) -> BoundingBox | None:
+    """Trouve la bulle blanche englobante exacte ; None si introuvable."""
+    h, w = base_bgr.shape[:2]
+    gray = cv2.cvtColor(base_bgr, cv2.COLOR_BGR2GRAY)
+    x0, y0, x1, y1 = bb.x_min, bb.y_min, bb.x_max, bb.y_max
+    bw, bh = x1 - x0, y1 - y0
+    if bw < 6 or bh < 6:
+        return None
+
+    pad = max(24, bw, bh)
+    rx0 = max(0, x0 - pad)
+    ry0 = max(0, y0 - pad)
+    rx1 = min(w, x1 + pad)
+    ry1 = min(h, y1 + pad)
+    roi = gray[ry0:ry1, rx0:rx1]
+    if roi.size == 0:
+        return None
+
+    _, white = cv2.threshold(roi, 172, 255, cv2.THRESH_BINARY)
+    cx = max(0, min(roi.shape[1] - 1, (x0 + x1) // 2 - rx0))
+    cy = max(0, min(roi.shape[0] - 1, (y0 + y1) // 2 - ry0))
+
+    n, _, stats, _ = cv2.connectedComponentsWithStats(white)
+    orig_area = max(1, bw * bh)
+    max_bubble_area = min(0.10 * w * h, orig_area * 4)
+    for i in range(1, n):
+        sx, sy, sw, sh, area = stats[i]
+        if area < 120 or area > max_bubble_area:
+            continue
+        if sx <= cx <= sx + sw and sy <= cy <= sy + sh:
+            return BoundingBox(
+                x_min=max(0, rx0 + sx - 2),
+                y_min=max(0, ry0 + sy - 2),
+                x_max=min(w, rx0 + sx + sw + 2),
+                y_max=min(h, ry0 + sy + sh + 2),
+            )
+    return None
+
+
+def _ink_density(base_bgr: np.ndarray, bb: BoundingBox) -> float:
+    h, w = base_bgr.shape[:2]
+    bb = _clip_bbox(bb, w, h)
+    roi = base_bgr[bb.y_min : bb.y_max, bb.x_min : bb.x_max]
+    if roi.size == 0:
+        return 0.0
+    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+    return float(np.count_nonzero(gray < INK_DARK_THRESHOLD)) / max(1, gray.size)
+
+
+def _is_suspect_edge_bbox(bb: BoundingBox, width: int, height: int) -> bool:
+    """Bande étroite collée au bord = coordonnées hors image clampées au bord."""
+    bw = max(1, bb.x_max - bb.x_min)
+    bh = max(1, bb.y_max - bb.y_min)
+    touches = (
+        bb.x_min <= 2
+        or bb.y_min <= 2
+        or bb.x_max >= width - 2
+        or bb.y_max >= height - 2
+    )
+    narrow = bw < bh * 0.45 or bh < bw * 0.45
+    return touches and narrow
+
+
+def _rescue_edge_bbox(
+    base_bgr: np.ndarray, bb: BoundingBox
+) -> BoundingBox | None:
+    """Cherche la bulle blanche réelle vers l'intérieur de la page."""
+    h, w = base_bgr.shape[:2]
+    bw = max(8, bb.x_max - bb.x_min)
+    bh = max(8, bb.y_max - bb.y_min)
+    grow_x = min(w // 3, bh)
+    grow_y = min(h // 3, bw)
+    search = _clip_bbox(
+        BoundingBox(
+            x_min=bb.x_min - grow_x,
+            y_min=bb.y_min - grow_y,
+            x_max=bb.x_max + grow_x,
+            y_max=bb.y_max + grow_y,
+        ),
+        w,
+        h,
+    )
+    return detect_bubble_region(base_bgr, search)
+
+
+def detect_bubble_polygon(
+    base_bgr: np.ndarray, bb: BoundingBox
+) -> list[tuple[int, int]] | None:
+    """Contour polygonal exact de la bulle blanche contenant le centre de la bbox."""
+    h, w = base_bgr.shape[:2]
+    bb = _clip_bbox(bb, w, h)
+    x0, y0, x1, y1 = bb.x_min, bb.y_min, bb.x_max, bb.y_max
+    bw, bh = x1 - x0, y1 - y0
+    if bw < 6 or bh < 6:
+        return None
+
+    pad = max(24, bw // 2, bh // 2)
+    rx0 = max(0, x0 - pad)
+    ry0 = max(0, y0 - pad)
+    rx1 = min(w, x1 + pad)
+    ry1 = min(h, y1 + pad)
+    gray = cv2.cvtColor(base_bgr[ry0:ry1, rx0:rx1], cv2.COLOR_BGR2GRAY)
+    if gray.size == 0:
+        return None
+
+    _, white = cv2.threshold(gray, 172, 255, cv2.THRESH_BINARY)
+    white = cv2.morphologyEx(
+        white,
+        cv2.MORPH_CLOSE,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)),
+        iterations=2,
+    )
+
+    cx = max(0, min(white.shape[1] - 1, (x0 + x1) // 2 - rx0))
+    cy = max(0, min(white.shape[0] - 1, (y0 + y1) // 2 - ry0))
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(white)
+    orig_area = max(1, bw * bh)
+    max_bubble_area = min(0.10 * w * h, orig_area * 4)
+
+    label = int(labels[cy, cx]) if white[cy, cx] > 0 else 0
+    if label > 0:
+        area = stats[label, cv2.CC_STAT_AREA]
+        if area < 120 or area > max_bubble_area:
+            label = 0
+    if label == 0:
+        # Le centre tombe sur l'encre du texte : chercher la composante englobante.
+        for i in range(1, n):
+            sx, sy, sw, sh, area = stats[i]
+            if area < 120 or area > max_bubble_area:
+                continue
+            if sx <= cx <= sx + sw and sy <= cy <= sy + sh:
+                label = i
+                break
+    if label == 0:
+        return None
+
+    mask = (labels == label).astype(np.uint8) * 255
+    contours, _ = cv2.findContours(
+        mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    )
+    if not contours:
+        return None
+    contour = max(contours, key=cv2.contourArea)
+    if cv2.contourArea(contour) < 120:
+        return None
+
+    # Lissage léger : garde la forme exacte (ovale, pointe...) sans bruit pixel.
+    eps = max(1.2, 0.0035 * cv2.arcLength(contour, True))
+    approx = cv2.approxPolyDP(contour, eps, True)
+    points = [(int(p[0][0]) + rx0, int(p[0][1]) + ry0) for p in approx]
+    if len(points) < 3:
+        return None
+    return points
+
+
+def _separate_overlapping_bboxes(
+    bbs: list[BoundingBox],
+    *,
+    min_size: int = 14,
+    gap: int = 2,
+    max_iters: int = 6,
+) -> list[BoundingBox]:
+    """Garantit zero chevauchement : retrecit les bbox le long de l'axe le moins couteux."""
+    bbs = list(bbs)
+    for _ in range(max_iters):
+        changed = False
+        for i in range(len(bbs)):
+            for j in range(i + 1, len(bbs)):
+                a, b = bbs[i], bbs[j]
+                ox = min(a.x_max, b.x_max) - max(a.x_min, b.x_min)
+                oy = min(a.y_max, b.y_max) - max(a.y_min, b.y_min)
+                if ox <= 0 or oy <= 0:
+                    continue
+                changed = True
+                if ox <= oy:
+                    need = ox + gap
+                    if (a.x_min + a.x_max) <= (b.x_min + b.x_max):
+                        li, ri = i, j
+                    else:
+                        li, ri = j, i
+                    left, right = bbs[li], bbs[ri]
+                    cut_l = min(
+                        (need + 1) // 2,
+                        max(0, (left.x_max - left.x_min) - min_size),
+                    )
+                    left = left.model_copy(update={"x_max": left.x_max - cut_l})
+                    cut_r = min(
+                        need - cut_l,
+                        max(0, (right.x_max - right.x_min) - min_size),
+                    )
+                    right = right.model_copy(update={"x_min": right.x_min + cut_r})
+                    bbs[li], bbs[ri] = left, right
+                else:
+                    need = oy + gap
+                    if (a.y_min + a.y_max) <= (b.y_min + b.y_max):
+                        ti, bi = i, j
+                    else:
+                        ti, bi = j, i
+                    top, bottom = bbs[ti], bbs[bi]
+                    cut_t = min(
+                        (need + 1) // 2,
+                        max(0, (top.y_max - top.y_min) - min_size),
+                    )
+                    top = top.model_copy(update={"y_max": top.y_max - cut_t})
+                    cut_b = min(
+                        need - cut_t,
+                        max(0, (bottom.y_max - bottom.y_min) - min_size),
+                    )
+                    bottom = bottom.model_copy(
+                        update={"y_min": bottom.y_min + cut_b}
+                    )
+                    bbs[ti], bbs[bi] = top, bottom
+        if not changed:
+            break
+    return bbs
+
+
 def _strict_ink_pixels(gray: np.ndarray) -> np.ndarray:
     """Masque binaire : uniquement l'encre tres sombre (pas les gris/trames)."""
     return (gray < INK_DARK_THRESHOLD).astype(np.uint8) * 255
@@ -318,13 +544,37 @@ def refine_blocks_for_render(
             )
 
         is_sfx = _looks_like_sfx_text(block.originalText)
+
+        # Bbox clampée au bord de page (coords détection hors image) :
+        # tenter de retrouver la vraie bulle vers l'intérieur, sinon abandonner
+        # la zone si elle tombe sur une marge noire ou une zone vide.
+        if _is_suspect_edge_bbox(cursor_bb, w, h):
+            rescued = _rescue_edge_bbox(bgr, cursor_bb)
+            if rescued is not None:
+                logger.info("Bbox au bord rescapée bulle #%s", block.id)
+                cursor_bb = rescued
+            else:
+                density = _ink_density(bgr, cursor_bb)
+                if density > 0.55 or density < 0.015:
+                    logger.warning(
+                        "Zone #%s abandonnée (bande au bord, densité encre %.2f)",
+                        block.id,
+                        density,
+                    )
+                    continue
+
         if is_sfx:
             ink_bb = _refine_bbox_to_text(bgr, cursor_bb)
             new_bb = _align_render_bbox(cursor_bb, ink_bb, w, h)
-            tags = "[[BG:TRANSPARENT]][[DIR:V]]"
+            clean_tr, _, _ = _extract_render_hints(block.translatedText)
+            # Jamais de vertical pour une traduction en alphabet latin.
+            dir_tag = "[[DIR:V]]" if _has_cjk(clean_tr) else "[[DIR:H]]"
+            tags = f"[[BG:TRANSPARENT]]{dir_tag}"
         else:
-            expanded = expand_bbox_to_bubble_region(bgr, cursor_bb)
-            new_bb = _align_render_bbox(cursor_bb, expanded, w, h)
+            # Forme exacte de la bulle originale : composant blanc détecté,
+            # sinon coords Cursor telles quelles (jamais d'agrandissement).
+            bubble_bb = detect_bubble_region(bgr, cursor_bb)
+            new_bb = bubble_bb if bubble_bb is not None else cursor_bb
             tags = "[[BG:SOLID]][[DIR:H]]"
 
         tr = _prepend_render_tags(block.translatedText, tags)
@@ -333,6 +583,13 @@ def refine_blocks_for_render(
                 update={"boundingBox": new_bb, "translatedText": tr},
             )
         )
+
+    # Interdiction stricte de superposition entre bulles.
+    separated = _separate_overlapping_bboxes([b.boundingBox for b in refined])
+    refined = [
+        blk.model_copy(update={"boundingBox": bb})
+        for blk, bb in zip(refined, separated)
+    ]
     return refined
 
 
@@ -397,54 +654,6 @@ def _clip_bbox(bb: BoundingBox, width: int, height: int) -> BoundingBox:
 
 def _box_area(bb: BoundingBox) -> int:
     return max(0, bb.x_max - bb.x_min) * max(0, bb.y_max - bb.y_min)
-
-
-def expand_bbox_to_bubble_region(base_bgr: np.ndarray, bb: BoundingBox) -> BoundingBox:
-    """Étend la bbox jusqu'à la bulle blanche (ou zone claire) englobante."""
-    h, w = base_bgr.shape[:2]
-    gray = cv2.cvtColor(base_bgr, cv2.COLOR_BGR2GRAY)
-    x0, y0, x1, y1 = bb.x_min, bb.y_min, bb.x_max, bb.y_max
-    bw, bh = x1 - x0, y1 - y0
-    if bw < 6 or bh < 6:
-        return bb
-
-    pad = max(24, bw, bh)
-    rx0 = max(0, x0 - pad)
-    ry0 = max(0, y0 - pad)
-    rx1 = min(w, x1 + pad)
-    ry1 = min(h, y1 + pad)
-    roi = gray[ry0:ry1, rx0:rx1]
-    if roi.size == 0:
-        return bb
-
-    _, white = cv2.threshold(roi, 172, 255, cv2.THRESH_BINARY)
-    cx = (x0 + x1) // 2 - rx0
-    cy = (y0 + y1) // 2 - ry0
-    cx = max(0, min(roi.shape[1] - 1, cx))
-    cy = max(0, min(roi.shape[0] - 1, cy))
-
-    n, _, stats, _ = cv2.connectedComponentsWithStats(white)
-    orig_area = max(1, bw * bh)
-    max_bubble_area = min(0.10 * w * h, orig_area * 4)
-    for i in range(1, n):
-        sx, sy, sw, sh, area = stats[i]
-        if area < 120 or area > max_bubble_area:
-            continue
-        if sx <= cx <= sx + sw and sy <= cy <= sy + sh:
-            return BoundingBox(
-                x_min=max(0, rx0 + sx - 3),
-                y_min=max(0, ry0 + sy - 3),
-                x_max=min(w, rx0 + sx + sw + 3),
-                y_max=min(h, ry0 + sy + sh + 3),
-            )
-
-    grow = max(8, min(40, bw // 4, bh // 4))
-    return BoundingBox(
-        x_min=max(0, x0 - grow),
-        y_min=max(0, y0 - grow),
-        x_max=min(w, x1 + grow),
-        y_max=min(h, y1 + grow),
-    )
 
 
 def _refine_bbox_to_text(base_bgr: np.ndarray, bb: BoundingBox) -> BoundingBox:
@@ -655,13 +864,29 @@ def _draw_bubble_overlay(
     text: str,
     font_candidates: list[str],
     draw_background: bool = False,
+    polygon: list[tuple[int, int]] | None = None,
 ) -> None:
-    """Texte centré dans la bulle; fond blanc ajusté au contenu."""
+    """Texte centré dans la bulle; fond = polygone exact de la bulle si dispo."""
     x0, y0, x1, y1 = bb.x_min, bb.y_min, bb.x_max, bb.y_max
     box_w = x1 - x0
     box_h = y1 - y0
     if box_w < 12 or box_h < 10:
         return
+
+    use_polygon = (
+        draw_background and polygon is not None and len(polygon) >= 3
+    )
+    if use_polygon:
+        # Remplissage de la forme réelle de la bulle ; le contour noir
+        # d'origine reste visible autour du polygone.
+        draw.polygon(polygon, fill=TEXT_BG_FILL)
+        # Marge supplémentaire : les bords incurvés rognent la zone utile.
+        sx = max(2, int(box_w * 0.08))
+        sy = max(2, int(box_h * 0.08))
+        x0, y0, x1, y1 = x0 + sx, y0 + sy, x1 - sx, y1 - sy
+        box_w, box_h = x1 - x0, y1 - y0
+        if box_w < 8 or box_h < 8:
+            return
 
     fitted = _fit_text_to_box(text, box_w, box_h, font_candidates)
     if not fitted:
@@ -669,7 +894,7 @@ def _draw_bubble_overlay(
     font, lines, line_heights, line_gap = fitted
     total_h, max_w, _ = _layout_metrics(font, lines, line_gap)
 
-    if draw_background:
+    if draw_background and not use_polygon:
         bx0, by0, bx1, by1 = _tight_text_rect(
             bb, text_w=max_w, text_h=total_h
         )
@@ -753,6 +978,7 @@ def _draw_bubble_overlay_vertical(
     text: str,
     font_candidates: list[str],
     draw_background: bool = False,
+    polygon: list[tuple[int, int]] | None = None,
 ) -> None:
     x0, y0, x1, y1 = bb.x_min, bb.y_min, bb.x_max, bb.y_max
     box_w = x1 - x0
@@ -760,11 +986,24 @@ def _draw_bubble_overlay_vertical(
     if box_w < 12 or box_h < 10:
         return
 
+    use_polygon = (
+        draw_background and polygon is not None and len(polygon) >= 3
+    )
+    if use_polygon:
+        draw.polygon(polygon, fill=TEXT_BG_FILL)
+        sx = max(2, int(box_w * 0.08))
+        sy = max(2, int(box_h * 0.08))
+        x0, y0, x1, y1 = x0 + sx, y0 + sy, x1 - sx, y1 - sy
+        box_w, box_h = x1 - x0, y1 - y0
+        if box_w < 8 or box_h < 8:
+            return
+        draw_background = False
+
     fitted = _fit_vertical_text_to_box(text, box_w, box_h, font_candidates)
     if not fitted:
         _draw_bubble_overlay(
             draw,
-            bb,
+            BoundingBox(x_min=x0, y_min=y0, x_max=x1, y_max=y1),
             text,
             font_candidates,
             draw_background=draw_background,
@@ -821,6 +1060,18 @@ def inpaint_and_render(
 ) -> None:
     """Efface le texte source puis superpose la traduction."""
     blocks = refine_blocks_for_render(image_path, blocks)
+
+    # Forme exacte des bulles (polygones) détectée sur l'image originale.
+    polygons: dict[int, list[tuple[int, int]]] = {}
+    base_bgr = cv2.imread(str(image_path))
+    if base_bgr is not None:
+        for block in blocks:
+            if _looks_like_sfx_text(block.originalText):
+                continue
+            poly = detect_bubble_polygon(base_bgr, block.boundingBox)
+            if poly:
+                polygons[block.id] = poly
+
     cleaned = output_path.with_name(f".{output_path.stem}_clean.png")
     try:
         erase_text_regions(image_path, blocks, cleaned)
@@ -858,6 +1109,9 @@ def inpaint_and_render(
             if dir_hint == "horizontal"
             else vertical_mode
         )
+        # Texte traduit en alphabet latin : toujours horizontal.
+        if target_language in _LATIN_TARGETS and not _has_cjk(hinted_text):
+            use_vertical = False
         draw_bg = bg_hint is not False
         if use_vertical:
             _draw_bubble_overlay_vertical(
@@ -866,6 +1120,7 @@ def inpaint_and_render(
                 hinted_text,
                 font_candidates,
                 draw_background=draw_bg,
+                polygon=polygons.get(block.id),
             )
         else:
             _draw_bubble_overlay(
@@ -874,6 +1129,7 @@ def inpaint_and_render(
                 hinted_text,
                 font_candidates,
                 draw_background=draw_bg,
+                polygon=polygons.get(block.id),
             )
 
     composed = Image.alpha_composite(pil, overlay).convert("RGB")

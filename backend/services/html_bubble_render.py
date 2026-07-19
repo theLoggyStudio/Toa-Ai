@@ -6,6 +6,7 @@ import html
 import logging
 import re
 import shutil
+import threading
 from pathlib import Path
 
 from models import TextBlock
@@ -120,8 +121,9 @@ def _bubble_classes(block: TextBlock, scan_path: Path | None = None) -> str:
     is_sfx = bg_hint is False or _looks_like_sfx_text(block.originalText)
     if is_sfx:
         classes.append("toa-bubble--sfx")
-        classes.append("toa-bubble--vertical")
-    elif dir_hint == "vertical":
+    # Vertical uniquement si le tag le demande (traduction CJK) ;
+    # une traduction en alphabet latin reste horizontale.
+    if dir_hint == "vertical":
         classes.append("toa-bubble--vertical")
     if scan_path and not is_sfx:
         try:
@@ -177,11 +179,13 @@ def build_overlay_html(
         box_w = max(8, bb.x_max - bb.x_min)
         box_h = max(8, bb.y_max - bb.y_min)
         is_sfx = _looks_like_sfx_text(block.originalText)
-        font_size = (
-            f"clamp(11px, {max(12, int(box_h * 0.14))}px, 42px)"
+        # Taille de depart : l'auto-fit JS la reduit ensuite si le texte deborde.
+        start_size = (
+            max(12, int(box_h * 0.14))
             if is_sfx
-            else f"clamp(9px, {max(10, int(min(box_w, box_h) * 0.11))}px, 24px)"
+            else max(10, int(min(box_w, box_h) * 0.16))
         )
+        font_size = f"{min(start_size, 42 if is_sfx else 26)}px"
         bubble_layers.append(
             f'<div class="toa-bubble-wrap" style="left:{left}px;top:{top}px;'
             f'width:{box_w}px;height:{box_h}px;position:absolute;">'
@@ -195,7 +199,7 @@ def build_overlay_html(
 <head>
 <meta charset="utf-8"/>
 <style>{css}
-.toa-bubble-wrap {{ position: absolute; pointer-events: none; overflow: visible; }}
+.toa-bubble-wrap {{ position: absolute; pointer-events: none; overflow: hidden; }}
 .toa-bubble-wrap .toa-bubble {{
   width: 100%; height: 100%;
   box-sizing: border-box;
@@ -209,33 +213,91 @@ def build_overlay_html(
 {layers_html}
 </div>
 </div>
+<script>
+// Auto-fit : reduit la police jusqu'a ce que le texte tienne dans la bulle
+// (la bulle garde exactement la taille de la bulle originale).
+document.querySelectorAll('.toa-bubble').forEach((el) => {{
+  let size = parseFloat(getComputedStyle(el).fontSize) || 16;
+  let guard = 80;
+  while (
+    guard-- > 0 && size > 5 &&
+    (el.scrollHeight > el.clientHeight + 1 || el.scrollWidth > el.clientWidth + 1)
+  ) {{
+    size -= 0.5;
+    el.style.fontSize = size + 'px';
+  }}
+}});
+window.__toaFitDone = true;
+</script>
 </body>
 </html>"""
 
 
-def _screenshot_html(html_path: Path, output_path: Path, width: int, height: int) -> None:
+# Playwright sync est lié au thread qui l'a démarré : une instance par thread,
+# réutilisée pour toutes les pages (Chromium ne redémarre plus à chaque page).
+_playwright_state = threading.local()
+
+
+def _get_thread_browser():
+    state = getattr(_playwright_state, "state", None)
+    browser = state["browser"] if state else None
+    if browser is not None and browser.is_connected():
+        return browser
+    close_thread_browser()
     from playwright.sync_api import sync_playwright
 
+    pw = sync_playwright().start()
+    browser = pw.chromium.launch(headless=True)
+    _playwright_state.state = {"pw": pw, "browser": browser}
+    return browser
+
+
+def close_thread_browser() -> None:
+    """Ferme le Chromium du thread courant (fin de pipeline)."""
+    state = getattr(_playwright_state, "state", None)
+    if not state:
+        return
+    _playwright_state.state = None
+    try:
+        state["browser"].close()
+    except Exception:
+        pass
+    try:
+        state["pw"].stop()
+    except Exception:
+        pass
+
+
+def _screenshot_html(html_path: Path, output_path: Path, width: int, height: int) -> None:
     uri = html_path.resolve().as_uri()
-    with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(headless=True)
+
+    def _capture() -> None:
+        browser = _get_thread_browser()
+        page = browser.new_page(
+            viewport={"width": width, "height": height},
+            device_scale_factor=1,
+        )
         try:
-            page = browser.new_page(
-                viewport={"width": width, "height": height},
-                device_scale_factor=1,
-            )
             page.goto(uri, wait_until="load")
             page.wait_for_function(
                 """() => {
                     const img = document.querySelector('img.page-scan');
-                    return img && img.complete && img.naturalWidth > 0;
+                    return img && img.complete && img.naturalWidth > 0
+                        && window.__toaFitDone === true;
                 }""",
                 timeout=30_000,
             )
             page.wait_for_timeout(200)
             page.screenshot(path=str(output_path), full_page=False)
         finally:
-            browser.close()
+            page.close()
+
+    try:
+        _capture()
+    except Exception:
+        # Chromium a pu mourir entre deux pages : une seule relance propre.
+        close_thread_browser()
+        _capture()
 
 
 def render_page_html_overlays(

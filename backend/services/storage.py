@@ -1,5 +1,6 @@
 import json
 import os
+import threading
 import uuid
 from pathlib import Path
 from typing import Optional
@@ -9,19 +10,25 @@ from models import TranslationTask
 
 TASKS_FILE = OUTPUT_DIR / "tasks.json"
 
+# Protège les cycles lecture-modification-écriture de tasks.json :
+# le thread pipeline, le webhook PayDunya et le polling écrivent en concurrence.
+_TASKS_LOCK = threading.RLock()
+
 
 def _load_tasks() -> dict[str, dict]:
-    if not TASKS_FILE.exists():
-        return {}
-    return json.loads(TASKS_FILE.read_text(encoding="utf-8"))
+    with _TASKS_LOCK:
+        if not TASKS_FILE.exists():
+            return {}
+        return json.loads(TASKS_FILE.read_text(encoding="utf-8"))
 
 
 def _save_tasks(tasks: dict[str, dict]) -> None:
-    TASKS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    payload = json.dumps(tasks, indent=2)
-    tmp = TASKS_FILE.with_suffix(".json.tmp")
-    tmp.write_text(payload, encoding="utf-8")
-    os.replace(tmp, TASKS_FILE)
+    with _TASKS_LOCK:
+        TASKS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        payload = json.dumps(tasks, indent=2)
+        tmp = TASKS_FILE.with_suffix(".json.tmp")
+        tmp.write_text(payload, encoding="utf-8")
+        os.replace(tmp, TASKS_FILE)
 
 
 def create_task(
@@ -43,10 +50,11 @@ def create_task(
         billableBubblesCount=billable_bubbles_count,
         includeToa=include_toa,
     )
-    tasks = _load_tasks()
-    tasks[task_id] = task.model_dump()
-    tasks[task_id]["upload_dir"] = str(UPLOAD_DIR / task_id)
-    _save_tasks(tasks)
+    with _TASKS_LOCK:
+        tasks = _load_tasks()
+        tasks[task_id] = task.model_dump()
+        tasks[task_id]["upload_dir"] = str(UPLOAD_DIR / task_id)
+        _save_tasks(tasks)
     (UPLOAD_DIR / task_id).mkdir(parents=True, exist_ok=True)
     return task
 
@@ -67,6 +75,7 @@ def get_task(task_id: str) -> Optional[TranslationTask]:
         includeToa=bool(raw.get("includeToa", True)),
         payduniaToken=raw.get("payduniaToken"),
         pdfUrl=raw.get("pdfUrl"),
+        partialPdfUrl=raw.get("partialPdfUrl"),
         progressPercent=int(raw.get("progressPercent", 0)),
         progressMessage=raw.get("progressMessage"),
         errorMessage=raw.get("errorMessage"),
@@ -74,11 +83,12 @@ def get_task(task_id: str) -> Optional[TranslationTask]:
 
 
 def update_task(task_id: str, **fields: object) -> Optional[TranslationTask]:
-    tasks = _load_tasks()
-    if task_id not in tasks:
-        return None
-    tasks[task_id].update(fields)
-    _save_tasks(tasks)
+    with _TASKS_LOCK:
+        tasks = _load_tasks()
+        if task_id not in tasks:
+            return None
+        tasks[task_id].update(fields)
+        _save_tasks(tasks)
     return get_task(task_id)
 
 
@@ -93,23 +103,24 @@ def get_output_pdf(task_id: str) -> Optional[Path]:
 
 def recover_interrupted_tasks() -> int:
     """Remet en failed les taches restees en processing apres un redemarrage."""
-    tasks = _load_tasks()
-    recovered = 0
-    for task_id, raw in tasks.items():
-        if raw.get("status") != "processing":
-            continue
-        tasks[task_id].update(
-            {
-                "status": "failed",
-                "progressPercent": 0,
-                "progressMessage": None,
-                "errorMessage": (
-                    "Traitement interrompu (redemarrage du serveur). "
-                    "Relancez une nouvelle traduction."
-                ),
-            }
-        )
-        recovered += 1
-    if recovered:
-        _save_tasks(tasks)
-    return recovered
+    with _TASKS_LOCK:
+        tasks = _load_tasks()
+        recovered = 0
+        for task_id, raw in tasks.items():
+            if raw.get("status") != "processing":
+                continue
+            tasks[task_id].update(
+                {
+                    "status": "failed",
+                    "progressPercent": 0,
+                    "progressMessage": None,
+                    "errorMessage": (
+                        "Traitement interrompu (redemarrage du serveur). "
+                        "Utilisez « Reprendre » pour continuer la ou ca s'est arrete."
+                    ),
+                }
+            )
+            recovered += 1
+        if recovered:
+            _save_tasks(tasks)
+        return recovered

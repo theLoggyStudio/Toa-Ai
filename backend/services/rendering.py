@@ -10,6 +10,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 from models import BoundingBox, TextBlock
+from services.bubble_fit import TRANSLATED_TEXT_RGB
 
 logger = logging.getLogger(__name__)
 
@@ -911,7 +912,9 @@ def _draw_bubble_overlay(
         y = cy - total_h // 2
         for line, lh in zip(lines, line_heights):
             lw = font.getbbox(line)[2] - font.getbbox(line)[0]
-            draw.text((cx - lw // 2, y), line, fill=(0, 0, 0), font=font)
+            draw.text(
+                (cx - lw // 2, y), line, fill=TRANSLATED_TEXT_RGB, font=font
+            )
             y += lh + line_gap
         return
 
@@ -920,7 +923,7 @@ def _draw_bubble_overlay(
     for line, lh in zip(lines, line_heights):
         lw = font.getbbox(line)[2] - font.getbbox(line)[0]
         tx = x0 + inset_x + max(0, (box_w - 2 * inset_x - lw) // 2)
-        draw.text((tx, y), line, fill=(0, 0, 0), font=font)
+        draw.text((tx, y), line, fill=TRANSLATED_TEXT_RGB, font=font)
         y += lh + line_gap
 
 
@@ -1035,7 +1038,7 @@ def _draw_bubble_overlay_vertical(
             for ch in col:
                 cw = font.getbbox(ch)[2] - font.getbbox(ch)[0]
                 tx = cx + max(0, (char_w - cw) // 2)
-                draw.text((tx, cy), ch, fill=(0, 0, 0), font=font)
+                draw.text((tx, cy), ch, fill=TRANSLATED_TEXT_RGB, font=font)
                 cy += char_h + char_gap
         return
 
@@ -1048,7 +1051,7 @@ def _draw_bubble_overlay_vertical(
         for ch in col:
             cw = font.getbbox(ch)[2] - font.getbbox(ch)[0]
             tx = cx + max(0, (char_w - cw) // 2)
-            draw.text((tx, cy), ch, fill=(0, 0, 0), font=font)
+            draw.text((tx, cy), ch, fill=TRANSLATED_TEXT_RGB, font=font)
             cy += char_h + char_gap
 
 

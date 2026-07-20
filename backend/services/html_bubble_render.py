@@ -9,7 +9,15 @@ import shutil
 import threading
 from pathlib import Path
 
-from models import TextBlock
+from models import BoundingBox, TextBlock
+from services.bubble_fit import (
+    BUBBLE_FIT_CSS,
+    BUBBLE_FIT_SCRIPT,
+    TRANSLATED_TEXT_COLOR,
+    build_bubble_wrap,
+    estimate_font_size,
+    locate_bubble_interior,
+)
 from services.rendering import (
     _extract_render_hints,
     _is_round_bubble,
@@ -64,15 +72,20 @@ html, body {{ overflow: hidden; }}
   align-items: center;
   justify-content: center;
   text-align: center;
-  background: rgb(255, 255, 255);
-  border: 1px solid rgba(40, 28, 22, 0.45);
-  border-radius: 10px;
-  padding: 5px 7px;
-  color: #1a1410;
+  /* Fond transparent : on superpose le texte sur la bulle manga originale
+     (déjà blanchie par l'effacement), sans redessiner un rectangle. */
+  background: transparent;
+  border: none;
+  border-radius: 8px;
+  padding: 4px 6px;
+  color: {TRANSLATED_TEXT_COLOR} !important;
   font-family: "ToaManga", "Yu Gothic", "Segoe UI", sans-serif;
   font-weight: 700;
   line-height: 1.22;
   word-wrap: break-word;
+}}
+.toa-bubble, .toa-bubble * {{
+  color: {TRANSLATED_TEXT_COLOR} !important;
 }}
 .toa-bubble--round {{ border-radius: 50%; }}
 .toa-bubble--sfx {{
@@ -81,14 +94,14 @@ html, body {{ overflow: hidden; }}
   font-family: "ToaSFX", Impact, "Arial Black", sans-serif;
   font-weight: 900;
   letter-spacing: 0.02em;
-  color: #111;
+  color: {TRANSLATED_TEXT_COLOR} !important;
   text-shadow: 1px 1px 0 #fff, -1px -1px 0 #fff;
 }}
 .toa-bubble--vertical {{
   writing-mode: vertical-rl;
   text-orientation: mixed;
 }}
-.toa-bubble p {{ margin: 0; }}
+.toa-bubble p {{ margin: 0; color: {TRANSLATED_TEXT_COLOR} !important; }}
 """.strip()
 
 
@@ -143,11 +156,42 @@ def _fallback_bubble_html(translated: str, block: TextBlock, scan_path: Path | N
     return f'<div class="{cls}"><p>{safe}</p></div>'
 
 
+def _force_text_color(fragment: str) -> str:
+    """Neutralise couleurs / fonds inline Cursor ; impose #4A3F35 via CSS."""
+    cleaned = fragment or ""
+    cleaned = re.sub(
+        r"color\s*:\s*[^;\"']+;?",
+        f"color: {TRANSLATED_TEXT_COLOR};",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    # Pas de rectangle blanc Cursor : on superpose sur la bulle originale.
+    cleaned = re.sub(
+        r"background(?:-color)?\s*:\s*[^;\"']+;?",
+        "background: transparent;",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(
+        r"border(?:-[a-z]+)?\s*:\s*[^;\"']+;?",
+        "border: none;",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(
+        r"""(?:fill|stroke)\s*=\s*['"][^'"]*['"]""",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    return cleaned
+
+
 def _bubble_inner_html(
     block: TextBlock,
     scan_path: Path | None = None,
 ) -> str:
-    raw = (block.bubbleHtml or "").strip()
+    raw = _force_text_color((block.bubbleHtml or "").strip())
     if raw:
         if "class=" in raw:
             return raw
@@ -155,6 +199,26 @@ def _bubble_inner_html(
         return f'<div class="{cls}">{raw}</div>'
     tr = _strip_render_tags(block.translatedText)
     return _fallback_bubble_html(tr, block, scan_path) if tr else ""
+
+
+def _anchor_bbox_for_block(
+    block: TextBlock,
+    scan_bgr,
+) -> BoundingBox:
+    """Superpose la bulle créée sur la bulle manga réelle (flood-fill OpenCV)."""
+    bb = block.boundingBox
+    if scan_bgr is None:
+        return bb
+    _, _, bg_hint = _extract_render_hints(block.translatedText)
+    is_sfx = bg_hint is False or _looks_like_sfx_text(block.originalText)
+    if is_sfx:
+        # Onomatopées : rester sur la zone d'encre (pas de bulle blanche).
+        return bb
+    try:
+        return locate_bubble_interior(scan_bgr, bb)
+    except Exception as exc:
+        logger.debug("Localisation bulle échouée (#%s): %s", block.id, exc)
+        return bb
 
 
 def build_overlay_html(
@@ -165,31 +229,58 @@ def build_overlay_html(
     height: int,
     page_css: str = "",
     scan_path: Path | None = None,
+    locate_on: Path | None = None,
 ) -> str:
-    """scan_filename : chemin relatif vers le PNG/JPEG à côté du fichier HTML."""
+    """scan_filename : chemin relatif vers le PNG/JPEG à côté du fichier HTML.
+
+    locate_on : scan ORIGINAL pour le flood-fill (avant effacement du texte).
+    """
     css = _sanitize_page_css(page_css)
     bubble_layers: list[str] = []
+
+    scan_bgr = None
+    locate_path = locate_on or scan_path
+    if locate_path is not None:
+        try:
+            import cv2
+
+            scan_bgr = cv2.imread(str(locate_path))
+        except Exception:
+            scan_bgr = None
 
     for block in blocks:
         inner = _bubble_inner_html(block, scan_path)
         if not inner:
             continue
-        bb = block.boundingBox
-        left, top = bb.x_min, bb.y_min
+        bb = _anchor_bbox_for_block(block, scan_bgr)
         box_w = max(8, bb.x_max - bb.x_min)
         box_h = max(8, bb.y_max - bb.y_min)
         is_sfx = _looks_like_sfx_text(block.originalText)
-        # Taille de depart : l'auto-fit JS la reduit ensuite si le texte deborde.
-        start_size = (
-            max(12, int(box_h * 0.14))
-            if is_sfx
-            else max(10, int(min(box_w, box_h) * 0.16))
+        _, _, bg_hint = _extract_render_hints(block.translatedText)
+        # Dialogue (pas SFX) : clip ovale pour coller à la forme manga.
+        is_oval = (not is_sfx) and (bg_hint is not False)
+        if scan_bgr is not None and is_oval:
+            try:
+                is_oval = True  # bulle de dialogue localisée → forme ovale typique
+            except Exception:
+                pass
+        font_size = estimate_font_size(
+            _strip_render_tags(block.translatedText),
+            box_w,
+            box_h,
+            is_sfx=is_sfx,
         )
-        font_size = f"{min(start_size, 42 if is_sfx else 26)}px"
         bubble_layers.append(
-            f'<div class="toa-bubble-wrap" style="left:{left}px;top:{top}px;'
-            f'width:{box_w}px;height:{box_h}px;position:absolute;">'
-            f'<div style="width:100%;height:100%;font-size:{font_size};">{inner}</div></div>'
+            build_bubble_wrap(
+                inner,
+                box_x_min=bb.x_min,
+                box_y_min=bb.y_min,
+                box_w=box_w,
+                box_h=box_h,
+                page_width=width,
+                font_size=font_size,
+                is_oval=is_oval,
+            )
         )
 
     layers_html = "\n".join(bubble_layers)
@@ -199,11 +290,7 @@ def build_overlay_html(
 <head>
 <meta charset="utf-8"/>
 <style>{css}
-.toa-bubble-wrap {{ position: absolute; pointer-events: none; overflow: hidden; }}
-.toa-bubble-wrap .toa-bubble {{
-  width: 100%; height: 100%;
-  box-sizing: border-box;
-}}
+{BUBBLE_FIT_CSS}
 </style>
 </head>
 <body style="width:{width}px;height:{height}px;margin:0;">
@@ -214,20 +301,7 @@ def build_overlay_html(
 </div>
 </div>
 <script>
-// Auto-fit : reduit la police jusqu'a ce que le texte tienne dans la bulle
-// (la bulle garde exactement la taille de la bulle originale).
-document.querySelectorAll('.toa-bubble').forEach((el) => {{
-  let size = parseFloat(getComputedStyle(el).fontSize) || 16;
-  let guard = 80;
-  while (
-    guard-- > 0 && size > 5 &&
-    (el.scrollHeight > el.clientHeight + 1 || el.scrollWidth > el.clientWidth + 1)
-  ) {{
-    size -= 0.5;
-    el.style.fontSize = size + 'px';
-  }}
-}});
-window.__toaFitDone = true;
+{BUBBLE_FIT_SCRIPT}
 </script>
 </body>
 </html>"""
@@ -332,6 +406,8 @@ def render_page_html_overlays(
         height=height,
         page_css=page_css,
         scan_path=scan_asset,
+        # Flood-fill sur le scan original : la bulle blanche est encore intacte.
+        locate_on=scan_path,
     )
     html_path.write_text(html_doc, encoding="utf-8")
 

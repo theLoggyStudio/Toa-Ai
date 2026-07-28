@@ -58,7 +58,7 @@ BUBBLE_FIT_CSS = f"""
   inset: 0;
   z-index: 0;
   pointer-events: none;
-  background: #ffffff !important;
+  background: rgba(255, 255, 255, 0.5) !important;
   border: none;
   opacity: 1 !important;
 }}

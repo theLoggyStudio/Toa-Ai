@@ -146,7 +146,7 @@ class TestSeparateOverlaps:
     def test_css_white_layer_under_text(self):
         assert ".toa-bubble-bg" in BUBBLE_FIT_CSS
         assert "border-radius: 50%" in BUBBLE_FIT_CSS
-        assert "background: #ffffff" in BUBBLE_FIT_CSS
+        assert "rgba(255, 255, 255, 0.5)" in BUBBLE_FIT_CSS
         assert "z-index: 1000" in BUBBLE_FIT_CSS
         assert TRANSLATED_TEXT_COLOR in BUBBLE_FIT_CSS
         assert "font-weight: 800" in BUBBLE_FIT_CSS

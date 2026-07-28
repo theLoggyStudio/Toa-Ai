@@ -35,6 +35,7 @@ BUBBLE_FIT_CSS = f"""
   position: absolute;
   left: 0;
   top: 0;
+  z-index: 100 !important;
   box-sizing: border-box;
   display: flex;
   align-items: center;
@@ -50,6 +51,8 @@ BUBBLE_FIT_CSS = f"""
 }}
 .toa-bubble-wrap .toa-bubble {{
   /* Fond blanc UNIQUEMENT derrière le texte (pas toute la bulle / panneau). */
+  position: relative;
+  z-index: 100 !important;
   width: max-content;
   height: max-content;
   max-width: 100%;

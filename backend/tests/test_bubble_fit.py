@@ -90,6 +90,7 @@ class TestCssContract:
         assert "background: #ffffff" in BUBBLE_FIT_CSS
         assert "max-content" in BUBBLE_FIT_CSS
         assert "background: transparent !important" in BUBBLE_FIT_CSS
+        assert "z-index: 100" in BUBBLE_FIT_CSS
         assert TRANSLATED_TEXT_COLOR in BUBBLE_FIT_CSS
         assert "translate(-50%" not in BUBBLE_FIT_CSS
 

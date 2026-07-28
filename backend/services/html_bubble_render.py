@@ -66,8 +66,17 @@ html, body {{ overflow: hidden; }}
   object-fit: fill;
   z-index: 0;
 }}
-.bubble-layer {{ position: absolute; inset: 0; z-index: 1; pointer-events: none; }}
+/* Superposition toujours au-dessus du scan (et de tout le reste). */
+.bubble-layer {{
+  position: absolute;
+  inset: 0;
+  z-index: 100 !important;
+  isolation: isolate;
+  pointer-events: none;
+}}
 .toa-bubble {{
+  position: relative;
+  z-index: 100 !important;
   overflow: hidden;
   display: flex;
   align-items: center;
@@ -289,7 +298,7 @@ def build_overlay_html(
 <body style="width:{width}px;height:{height}px;margin:0;">
 <div class="page" style="position:relative;width:{width}px;height:{height}px;">
 <img class="page-scan" src="{safe_scan}" width="{width}" height="{height}" alt=""/>
-<div class="bubble-layer">
+<div class="bubble-layer" style="z-index:100 !important;">
 {layers_html}
 </div>
 </div>

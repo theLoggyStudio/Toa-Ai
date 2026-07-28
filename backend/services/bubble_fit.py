@@ -6,7 +6,7 @@ Règles :
 2) Ne JAMAIS modifier le dessin (pas d'effacement / inpaint).
 3) Fond blanc CSS (ellipse ou clip-path) sous le texte.
 4) Marges réduites selon le contenu ; taille max = police originale estimée.
-5) Au plus 3 mots par ligne (retour à la ligne forcé).
+5) Au plus 3 mots par ligne ; un mot de 6+ lettres est seul sur sa ligne.
 """
 
 from __future__ import annotations
@@ -39,26 +39,56 @@ MIN_READABLE_PX = 9
 MIN_PAD_PX = 2
 MAX_PAD_PX = 5
 MAX_WORDS_PER_LINE = 3
+# Un mot de 6 lettres ou plus occupe une ligne à lui seul.
+LONG_WORD_MIN_LETTERS = 6
+
+
+def _word_letter_count(word: str) -> int:
+    """Nombre de lettres (ponctuation ignorée)."""
+    return len(re.findall(r"[A-Za-zÀ-ÿ]", word or ""))
+
+
+def _is_long_word(word: str, *, min_letters: int = LONG_WORD_MIN_LETTERS) -> bool:
+    return _word_letter_count(word) >= min_letters
 
 
 def wrap_max_words_per_line(
     text: str,
     *,
     max_words: int = MAX_WORDS_PER_LINE,
+    long_word_letters: int = LONG_WORD_MIN_LETTERS,
 ) -> list[str]:
-    """Découpe le texte : au plus `max_words` mots par ligne (retour à la ligne après)."""
+    """Découpe le texte :
+    - au plus `max_words` mots courts par ligne ;
+    - un mot ≥ long_word_letters lettres est seul sur sa ligne.
+    """
     words = re.findall(r"\S+", (text or "").strip())
     if not words:
         return []
     limit = max(1, int(max_words))
-    return [
-        " ".join(words[i : i + limit])
-        for i in range(0, len(words), limit)
-    ]
+    lines: list[str] = []
+    current: list[str] = []
+
+    def flush() -> None:
+        nonlocal current
+        if current:
+            lines.append(" ".join(current))
+            current = []
+
+    for word in words:
+        if _is_long_word(word, min_letters=long_word_letters):
+            flush()
+            lines.append(word)
+            continue
+        if len(current) >= limit:
+            flush()
+        current.append(word)
+    flush()
+    return lines
 
 
 def format_lines_html(text: str, *, max_words: int = MAX_WORDS_PER_LINE) -> str:
-    """HTML échappé avec <br/> entre les lignes (max 3 mots / ligne)."""
+    """HTML échappé avec <br/> entre les lignes (max 3 mots / longs seuls)."""
     import html as html_mod
 
     lines = wrap_max_words_per_line(text, max_words=max_words)

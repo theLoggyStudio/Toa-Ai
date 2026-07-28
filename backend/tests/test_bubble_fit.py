@@ -56,9 +56,15 @@ class TestContentPad:
 
 class TestMaxWordsPerLine:
     def test_wraps_every_three_words(self):
-        lines = wrap_max_words_per_line("Ah bon Tant mieux pour toi et encore")
-        assert lines == ["Ah bon Tant", "mieux pour toi", "et encore"]
+        lines = wrap_max_words_per_line("Ah bon Tant mieux pour toi et plus")
+        assert lines == ["Ah bon Tant", "mieux pour toi", "et plus"]
         assert all(len(line.split()) <= 3 for line in lines)
+
+    def test_long_word_alone_on_line(self):
+        # "encore" = 6 lettres → seul ; "mieux" = 5 → peut cohabiter.
+        lines = wrap_max_words_per_line("Ah bon Tant mieux pour toi et encore")
+        assert lines == ["Ah bon Tant", "mieux pour toi", "et", "encore"]
+        assert "encore" in lines
 
     def test_format_html_br(self):
         html = format_lines_html("un deux trois quatre")

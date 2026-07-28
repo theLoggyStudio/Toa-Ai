@@ -9,7 +9,9 @@ from services.bubble_fit import (
     TRANSLATED_TEXT_COLOR,
     boxes_overlap,
     build_bubble_wrap,
+    content_inner_pad,
     estimate_font_size,
+    estimate_original_font_size,
     polygon_bbox,
     polygon_centroid,
     polygon_to_clip_path,
@@ -26,8 +28,28 @@ class TestEstimateFontSize:
         assert big > small
 
     def test_bounds(self):
-        assert estimate_font_size("x", 2000, 2000) <= 28
+        assert estimate_font_size("x", 2000, 2000) <= 36
         assert estimate_font_size("mot " * 200, 40, 30) >= 9
+
+    def test_capped_by_original_font(self):
+        # Petite bbox originale → plafond bas, même si la zone placée est grande.
+        size = estimate_font_size(
+            "Ok",
+            400,
+            300,
+            original_text="あ",
+            original_box_w=40,
+            original_box_h=36,
+        )
+        assert size <= estimate_original_font_size("あ", 40, 36)
+
+
+class TestContentPad:
+    def test_short_tighter_than_long(self):
+        short = content_inner_pad("Oui", 120, 80)
+        long = content_inner_pad("phrase " * 40, 120, 80)
+        assert short <= long
+        assert short <= 3
 
 
 class TestPolygonHelpers:
@@ -85,8 +107,9 @@ class TestBuildBubbleWrap:
         )
         assert "toa-bubble-wrap--ellipse" in html
         assert 'class="toa-bubble-bg"' in html
-        assert "left:46px" in html  # 40 + INNER_PAD_PX
-        assert "top:66px" in html  # 60 + INNER_PAD_PX
+        assert "data-max-font=" in html
+        assert "left:42px" in html  # 40 + pad court (2)
+        assert "top:62px" in html
         assert "translate(-50%" not in html
 
     def test_sfx_has_no_white_bg(self):

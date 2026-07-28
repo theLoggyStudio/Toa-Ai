@@ -18,7 +18,9 @@ from services.bubble_fit import (
     boxes_iou,
     boxes_overlap,
     build_bubble_wrap,
+    content_inner_pad,
     estimate_font_size,
+    estimate_original_font_size,
     polygon_bbox,
     resolve_placement_boxes,
     shrink_polygon,
@@ -338,12 +340,27 @@ def build_overlay_html(
             bb = placed[idx]
             box_w = max(8, bb.x_max - bb.x_min)
             box_h = max(8, bb.y_max - bb.y_min)
+            # Cap police = taille originale (bbox Cursor source).
+            src_bb = block.boundingBox
+            src_w = max(8, src_bb.x_max - src_bb.x_min)
+            src_h = max(8, src_bb.y_max - src_bb.y_min)
+            translated = _strip_render_tags(block.translatedText)
             font_size = estimate_font_size(
-                _strip_render_tags(block.translatedText),
+                translated,
                 box_w,
                 box_h,
                 is_sfx=is_sfx,
+                original_text=block.originalText or "",
+                original_box_w=src_w,
+                original_box_h=src_h,
             )
+            max_font = estimate_original_font_size(
+                block.originalText or translated,
+                src_w,
+                src_h,
+                is_sfx=is_sfx,
+            )
+            pad = content_inner_pad(translated, box_w, box_h)
             use_poly = (
                 poly if (keep_poly[idx] and poly is not None and not is_sfx) else None
             )
@@ -358,6 +375,9 @@ def build_overlay_html(
                     font_size=font_size,
                     polygon=use_poly,
                     is_sfx=is_sfx,
+                    inner_pad=pad,
+                    max_font_size=max_font,
+                    content_text=translated,
                 )
             )
         layers_html = "\n".join(bubble_layers)

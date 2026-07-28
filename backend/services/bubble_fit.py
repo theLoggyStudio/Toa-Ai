@@ -5,13 +5,14 @@ Règles :
 1) Localiser la bulle (OpenCV) pour ancrer la zone.
 2) Ne JAMAIS modifier le dessin (pas d'effacement / inpaint).
 3) Fond blanc CSS (ellipse ou clip-path) sous le texte.
-4) Seule variable de fit : la taille de police (plancher de lisibilité).
+4) Marges réduites selon le contenu ; taille max = police originale estimée.
 """
 
 from __future__ import annotations
 
 import logging
 import math
+import re
 from typing import Sequence
 
 import cv2
@@ -23,7 +24,6 @@ logger = logging.getLogger(__name__)
 
 Point = tuple[int, int]
 
-# Contraste max sur fond blanc manga.
 TRANSLATED_TEXT_COLOR = "#111111"
 TRANSLATED_TEXT_RGB = (0x11, 0x11, 0x11)
 
@@ -31,10 +31,12 @@ TEXT_HALO_CSS = (
     "0 0 2px #fff, 1px 0 0 #fff, -1px 0 0 #fff, 0 1px 0 #fff, 0 -1px 0 #fff"
 )
 
-POLYGON_SHRINK = 0.85
-INNER_PAD_PX = 6
-TEXT_PAD_CSS = "5px 7px"
+POLYGON_SHRINK = 0.90
+INNER_PAD_PX = 3
+TEXT_PAD_CSS = "2px 4px"
 MIN_READABLE_PX = 9
+MIN_PAD_PX = 2
+MAX_PAD_PX = 5
 
 BUBBLE_FIT_CSS = f"""
 .toa-bubble-wrap {{
@@ -95,7 +97,7 @@ BUBBLE_FIT_CSS = f"""
   background: transparent !important;
   border: none !important;
   border-radius: 0;
-  padding: {TEXT_PAD_CSS};
+  padding: var(--toa-pad, {TEXT_PAD_CSS});
   white-space: normal;
   word-break: break-word;
   overflow-wrap: anywhere;
@@ -136,6 +138,7 @@ BUBBLE_FIT_CSS = f"""
 }}
 """.strip()
 
+# Fit : plafond = data-max-font (police originale), plancher = lisibilité.
 BUBBLE_FIT_SCRIPT = f"""
 document.querySelectorAll('.toa-bubble-wrap').forEach((wrap) => {{
   const el = wrap.querySelector('.toa-bubble') || wrap.querySelector('.toa-bubble-fit')?.firstElementChild;
@@ -144,9 +147,11 @@ document.querySelectorAll('.toa-bubble-wrap').forEach((wrap) => {{
     || !!wrap.querySelector('.toa-bubble--sfx');
   const maxW = wrap.clientWidth || parseFloat(wrap.dataset.w) || 60;
   const maxH = wrap.clientHeight || parseFloat(wrap.dataset.h) || 40;
-  const capSize = isSfx ? 44 : 30;
+  const originalCap = parseFloat(wrap.dataset.maxFont) || (isSfx ? 36 : 24);
+  const capSize = Math.max({MIN_READABLE_PX}, originalCap);
   const minSize = {MIN_READABLE_PX};
-  let size = parseFloat(getComputedStyle(el).fontSize) || 14;
+  let size = parseFloat(getComputedStyle(el).fontSize) || Math.min(14, capSize);
+  if (size > capSize) size = capSize;
   const setSize = (s) => {{ size = s; el.style.fontSize = s.toFixed(1) + 'px'; }};
   const overflows = () => {{
     if (isSfx) {{
@@ -157,6 +162,7 @@ document.querySelectorAll('.toa-bubble-wrap').forEach((wrap) => {{
       || el.scrollHeight > el.clientHeight + 1;
   }};
 
+  setSize(size);
   let guard = 50;
   while (guard-- > 0 && size < capSize) {{
     setSize(size + 1);
@@ -165,9 +171,85 @@ document.querySelectorAll('.toa-bubble-wrap').forEach((wrap) => {{
   guard = 160;
   while (guard-- > 0 && size > minSize && overflows()) setSize(size - 0.5);
   if (size < minSize) setSize(minSize);
+  if (size > capSize) setSize(capSize);
 }});
 window.__toaFitDone = true;
 """.strip()
+
+
+def content_inner_pad(text: str, box_w: int, box_h: int) -> int:
+    """Marge intérieure réduite selon la densité du contenu (court = plus serré)."""
+    length = max(1, len((text or "").strip()))
+    area = max(1, box_w * box_h)
+    density = length / (area / 400.0)
+    if density < 0.35 or length <= 12:
+        return MIN_PAD_PX
+    if density < 0.9 or length <= 40:
+        return 3
+    if length <= 80:
+        return 4
+    return MAX_PAD_PX
+
+
+def estimate_original_font_size(
+    original_text: str,
+    box_w: int,
+    box_h: int,
+    *,
+    is_sfx: bool = False,
+) -> int:
+    """Taille approximative de la police source d'après la bbox + texte original."""
+    raw = (original_text or "").strip()
+    bw = max(8, box_w)
+    bh = max(8, box_h)
+    if not raw:
+        return max(MIN_READABLE_PX, min(28, int(bh * 0.35)))
+
+    explicit = [ln for ln in re.split(r"[\n\r]+", raw) if ln.strip()]
+    n_lines = max(1, len(explicit)) if len(explicit) > 1 else 1
+    if n_lines == 1:
+        if re.search(r"[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]", raw):
+            char_w = max(8.0, bw / max(1, min(len(raw), 14)))
+            n_lines = max(1, min(len(raw), int(round(bh / max(8.0, char_w * 0.9)))))
+        else:
+            cpl = max(4, int(bw / 9))
+            n_lines = max(1, min(8, (len(raw) + cpl - 1) // cpl))
+
+    line_h = bh / max(1, n_lines)
+    size = int(round(line_h * (0.88 if not is_sfx else 0.95)))
+    if is_sfx:
+        return max(MIN_READABLE_PX, min(48, size))
+    return max(MIN_READABLE_PX, min(36, size))
+
+
+def estimate_font_size(
+    text: str,
+    box_w: int,
+    box_h: int,
+    *,
+    is_sfx: bool = False,
+    original_text: str = "",
+    original_box_w: int | None = None,
+    original_box_h: int | None = None,
+) -> int:
+    """Taille cible, plafonnée par la police originale estimée."""
+    length = max(1, len((text or "").strip()))
+    ow = original_box_w if original_box_w is not None else box_w
+    oh = original_box_h if original_box_h is not None else box_h
+    original_cap = estimate_original_font_size(
+        original_text or text,
+        ow,
+        oh,
+        is_sfx=is_sfx,
+    )
+
+    if is_sfx:
+        size = max(12, min(original_cap, int(box_h * 0.42)))
+        return max(MIN_READABLE_PX, min(original_cap, size))
+
+    area = max(1, box_w * box_h)
+    size = int(math.sqrt(area / (length * 0.55 * 1.20)))
+    return max(MIN_READABLE_PX, min(original_cap, size))
 
 
 def polygon_bbox(points: Sequence[Point]) -> BoundingBox:
@@ -231,21 +313,6 @@ def polygon_to_clip_path(
     return "polygon(" + ", ".join(parts) + ")"
 
 
-def estimate_font_size(
-    text: str,
-    box_w: int,
-    box_h: int,
-    *,
-    is_sfx: bool = False,
-) -> int:
-    length = max(1, len((text or "").strip()))
-    if is_sfx:
-        return max(12, min(40, int(box_h * 0.42)))
-    area = max(1, box_w * box_h)
-    size = int(math.sqrt(area / (length * 0.55 * 1.20)))
-    return max(MIN_READABLE_PX, min(28, size))
-
-
 def _box_area(bb: BoundingBox) -> int:
     return max(0, bb.x_max - bb.x_min) * max(0, bb.y_max - bb.y_min)
 
@@ -295,11 +362,7 @@ def separate_overlapping_boxes(
     gap: int = 10,
     max_iters: int = 40,
 ) -> list[BoundingBox]:
-    """Écarte les boîtes qui se superposent (priorité : ne jamais empiler 2 textes).
-
-    Stratégie : pour chaque paire en conflit, pousser la boîte de droite / du bas
-    juste assez pour respecter `gap` pixels entre elles.
-    """
+    """Écarte les boîtes qui se superposent (priorité : ne jamais empiler 2 textes)."""
     if len(boxes) < 2:
         return list(boxes)
 
@@ -310,7 +373,6 @@ def separate_overlapping_boxes(
 
     for _ in range(max_iters):
         moved = False
-        # Traiter de gauche à droite / haut en bas : ancrer la 1re, déplacer la 2e.
         order = sorted(range(len(out)), key=lambda i: (out[i].y_min, out[i].x_min))
         for ai in range(len(order)):
             for bi in range(ai + 1, len(order)):
@@ -318,7 +380,6 @@ def separate_overlapping_boxes(
                 a, b = out[i], out[j]
                 if not boxes_overlap(a, b, gap=gap):
                     continue
-                # Direction préférée : horizontal si plus « côte à côte », sinon vertical.
                 a_cx = (a.x_min + a.x_max) / 2
                 b_cx = (b.x_min + b.x_max) / 2
                 a_cy = (a.y_min + a.y_max) / 2
@@ -326,7 +387,6 @@ def separate_overlapping_boxes(
                 prefer_x = abs(b_cx - a_cx) >= abs(b_cy - a_cy) * 0.55
 
                 if prefer_x:
-                    # Pousser b à droite de a (ou a à gauche de b si b est déjà à gauche).
                     if b_cx >= a_cx:
                         need = (a.x_max + gap) - b.x_min
                         if need > 0:
@@ -366,7 +426,6 @@ def resolve_placement_boxes(
     if n < 2:
         return list(seed_boxes), keep_poly
 
-    # Si deux polygones/bboxes se chevauchent beaucoup → AABB séparés sans clip polygone.
     for i in range(n):
         for j in range(i + 1, n):
             if boxes_iou(seed_boxes[i], seed_boxes[j]) >= 0.12 or boxes_overlap(
@@ -378,7 +437,6 @@ def resolve_placement_boxes(
     separated = separate_overlapping_boxes(
         seed_boxes, page_w=page_w, page_h=page_h, gap=10
     )
-    # Tout déplacement invalide le clip polygone d'origine.
     for i in range(n):
         if (
             separated[i].x_min != seed_boxes[i].x_min
@@ -399,55 +457,76 @@ def build_bubble_wrap(
     font_size: int,
     polygon: Sequence[Point] | None = None,
     is_sfx: bool = False,
+    inner_pad: int | None = None,
+    max_font_size: int | None = None,
+    content_text: str = "",
 ) -> str:
-    """Ancre la zone + superpose un fond blanc CSS (ovale ou clip polygone)."""
+    """Ancre la zone + fond blanc CSS ; marges selon contenu ; plafond police originale."""
+    pad = (
+        inner_pad
+        if inner_pad is not None
+        else content_inner_pad(content_text, box_w, box_h)
+    )
+    pad = max(MIN_PAD_PX, min(MAX_PAD_PX, pad))
+    max_font = max_font_size if max_font_size is not None else font_size
+    max_font = max(MIN_READABLE_PX, int(max_font))
+    font_size = min(font_size, max_font)
+
     bg = "" if is_sfx else '<div class="toa-bubble-bg" aria-hidden="true"></div>'
-    fit_open = f'<div class="toa-bubble-fit" style="font-size:{font_size}px;">'
+    pad_css = f"{pad}px {pad + 1}px"
+    fit_open = (
+        f'<div class="toa-bubble-fit" style="font-size:{font_size}px;">'
+    )
     fit_close = "</div>"
+    # Padding dynamique sur le wrap (écrase le défaut CSS selon le contenu).
+    pad_style = f"--toa-pad:{pad_css};"
 
     if is_sfx:
-        pad = INNER_PAD_PX
         x0 = box_x_min + pad
         y0 = box_y_min + pad
         max_w = max(12, min(box_w - 2 * pad, max(40, page_width - 16)))
         max_h = max(12, box_h - 2 * pad)
-        style = f"left:{x0}px;top:{y0}px;width:{max_w}px;height:{max_h}px;"
+        style = (
+            f"left:{x0}px;top:{y0}px;width:{max_w}px;height:{max_h}px;{pad_style}"
+        )
         return (
             f'<div class="toa-bubble-wrap toa-bubble-wrap--sfx" '
-            f'data-w="{max_w}" data-h="{max_h}" style="{style}">'
+            f'data-w="{max_w}" data-h="{max_h}" data-max-font="{max_font}" '
+            f'style="{style}">'
             f"{fit_open}{inner_html}{fit_close}</div>"
         )
 
     if polygon and len(polygon) >= 3:
         text_poly = shrink_polygon(polygon)
         bb = polygon_bbox(text_poly)
-        x0 = max(0, bb.x_min + INNER_PAD_PX // 2)
-        y0 = max(0, bb.y_min + INNER_PAD_PX // 2)
-        x1 = max(x0 + 12, bb.x_max - INNER_PAD_PX // 2)
-        y1 = max(y0 + 12, bb.y_max - INNER_PAD_PX // 2)
+        half = max(1, pad // 2)
+        x0 = max(0, bb.x_min + half)
+        y0 = max(0, bb.y_min + half)
+        x1 = max(x0 + 12, bb.x_max - half)
+        y1 = max(y0 + 12, bb.y_max - half)
         w = x1 - x0
         h = y1 - y0
         clip = polygon_to_clip_path(text_poly, origin_x=x0, origin_y=y0)
         style = (
             f"left:{x0}px;top:{y0}px;width:{w}px;height:{h}px;"
-            f"clip-path:{clip};-webkit-clip-path:{clip};"
+            f"clip-path:{clip};-webkit-clip-path:{clip};{pad_style}"
         )
         return (
             f'<div class="toa-bubble-wrap toa-bubble-wrap--poly" '
-            f'data-w="{w}" data-h="{h}" style="{style}">'
+            f'data-w="{w}" data-h="{h}" data-max-font="{max_font}" '
+            f'style="{style}">'
             f"{bg}{fit_open}{inner_html}{fit_close}</div>"
         )
 
-    # Repli dialogue sans polygone : ovale CSS (border-radius 50%).
-    pad = INNER_PAD_PX
     x0 = box_x_min + pad
     y0 = box_y_min + pad
     max_w = max(12, min(box_w - 2 * pad, max(40, page_width - 16)))
     max_h = max(12, box_h - 2 * pad)
-    style = f"left:{x0}px;top:{y0}px;width:{max_w}px;height:{max_h}px;"
+    style = f"left:{x0}px;top:{y0}px;width:{max_w}px;height:{max_h}px;{pad_style}"
     return (
         f'<div class="toa-bubble-wrap toa-bubble-wrap--ellipse" '
-        f'data-w="{max_w}" data-h="{max_h}" style="{style}">'
+        f'data-w="{max_w}" data-h="{max_h}" data-max-font="{max_font}" '
+        f'style="{style}">'
         f"{bg}{fit_open}{inner_html}{fit_close}</div>"
     )
 

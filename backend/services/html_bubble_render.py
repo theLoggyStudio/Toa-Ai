@@ -1,4 +1,4 @@
-"""Composition scan + bulles HTML/CSS positionnées (coordonnées Cursor)."""
+"""Composition scan + texte traduit clipé au polygone exact de chaque bulle."""
 
 from __future__ import annotations
 
@@ -13,15 +13,17 @@ from models import BoundingBox, TextBlock
 from services.bubble_fit import (
     BUBBLE_FIT_CSS,
     BUBBLE_FIT_SCRIPT,
+    TEXT_PAD_CSS,
     TRANSLATED_TEXT_COLOR,
     build_bubble_wrap,
     estimate_font_size,
-    locate_bubble_interior,
+    polygon_bbox,
+    shrink_polygon,
 )
 from services.rendering import (
     _extract_render_hints,
-    _is_round_bubble,
     _looks_like_sfx_text,
+    detect_bubble_polygon,
     erase_text_regions,
     refine_blocks_for_render,
 )
@@ -72,29 +74,25 @@ html, body {{ overflow: hidden; }}
   align-items: center;
   justify-content: center;
   text-align: center;
-  /* Fond transparent : on superpose le texte sur la bulle manga originale
-     (déjà blanchie par l'effacement), sans redessiner un rectangle. */
-  background: transparent;
-  border: none;
-  border-radius: 8px;
-  padding: 4px 6px;
+  background: transparent !important;
+  border: none !important;
+  border-radius: 0 !important;
+  padding: {TEXT_PAD_CSS};
   color: {TRANSLATED_TEXT_COLOR} !important;
   font-family: "ToaManga", "Yu Gothic", "Segoe UI", sans-serif;
   font-weight: 700;
-  line-height: 1.22;
+  line-height: 1.2;
   word-wrap: break-word;
 }}
 .toa-bubble, .toa-bubble * {{
   color: {TRANSLATED_TEXT_COLOR} !important;
+  background: transparent !important;
+  border: none !important;
 }}
-.toa-bubble--round {{ border-radius: 50%; }}
 .toa-bubble--sfx {{
-  background: transparent;
-  border: none;
   font-family: "ToaSFX", Impact, "Arial Black", sans-serif;
   font-weight: 900;
   letter-spacing: 0.02em;
-  color: {TRANSLATED_TEXT_COLOR} !important;
   text-shadow: 1px 1px 0 #fff, -1px -1px 0 #fff;
 }}
 .toa-bubble--vertical {{
@@ -113,13 +111,12 @@ def _strip_render_tags(text: str) -> str:
 
 
 def _sanitize_page_css(page_css: str) -> str:
-    """Ignore le CSS Cursor semi-transparent ; garde nos styles par defaut."""
     css = (page_css or "").strip()
     if not css:
         return DEFAULT_PAGE_CSS
     css = re.sub(
         r"rgba\s*\(\s*255\s*,\s*255\s*,\s*255\s*,\s*0\.\d+\s*\)",
-        "rgb(255, 255, 255)",
+        "transparent",
         css,
         flags=re.IGNORECASE,
     )
@@ -128,36 +125,25 @@ def _sanitize_page_css(page_css: str) -> str:
     return css
 
 
-def _bubble_classes(block: TextBlock, scan_path: Path | None = None) -> str:
+def _bubble_classes(block: TextBlock) -> str:
     classes = ["toa-bubble"]
     _, dir_hint, bg_hint = _extract_render_hints(block.translatedText)
     is_sfx = bg_hint is False or _looks_like_sfx_text(block.originalText)
     if is_sfx:
         classes.append("toa-bubble--sfx")
-    # Vertical uniquement si le tag le demande (traduction CJK) ;
-    # une traduction en alphabet latin reste horizontale.
     if dir_hint == "vertical":
         classes.append("toa-bubble--vertical")
-    if scan_path and not is_sfx:
-        try:
-            import cv2
-
-            bgr = cv2.imread(str(scan_path))
-            if bgr is not None and _is_round_bubble(bgr, block.boundingBox):
-                classes.append("toa-bubble--round")
-        except Exception:
-            pass
     return " ".join(classes)
 
 
-def _fallback_bubble_html(translated: str, block: TextBlock, scan_path: Path | None) -> str:
+def _fallback_bubble_html(translated: str, block: TextBlock) -> str:
     safe = html.escape(_strip_render_tags(translated))
-    cls = _bubble_classes(block, scan_path)
+    cls = _bubble_classes(block)
     return f'<div class="{cls}"><p>{safe}</p></div>'
 
 
-def _force_text_color(fragment: str) -> str:
-    """Neutralise couleurs / fonds inline Cursor ; impose #4A3F35 via CSS."""
+def _force_text_only(fragment: str) -> str:
+    """Supprime toute forme/couleur inline Cursor — texte seul en #4A3F35."""
     cleaned = fragment or ""
     cleaned = re.sub(
         r"color\s*:\s*[^;\"']+;?",
@@ -165,7 +151,6 @@ def _force_text_color(fragment: str) -> str:
         cleaned,
         flags=re.IGNORECASE,
     )
-    # Pas de rectangle blanc Cursor : on superpose sur la bulle originale.
     cleaned = re.sub(
         r"background(?:-color)?\s*:\s*[^;\"']+;?",
         "background: transparent;",
@@ -179,6 +164,12 @@ def _force_text_color(fragment: str) -> str:
         flags=re.IGNORECASE,
     )
     cleaned = re.sub(
+        r"border-radius\s*:\s*[^;\"']+;?",
+        "border-radius: 0;",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(
         r"""(?:fill|stroke)\s*=\s*['"][^'"]*['"]""",
         "",
         cleaned,
@@ -187,38 +178,36 @@ def _force_text_color(fragment: str) -> str:
     return cleaned
 
 
-def _bubble_inner_html(
-    block: TextBlock,
-    scan_path: Path | None = None,
-) -> str:
-    raw = _force_text_color((block.bubbleHtml or "").strip())
+def _bubble_inner_html(block: TextBlock) -> str:
+    raw = _force_text_only((block.bubbleHtml or "").strip())
     if raw:
         if "class=" in raw:
             return raw
-        cls = _bubble_classes(block, scan_path)
-        return f'<div class="{cls}">{raw}</div>'
+        return f'<div class="{_bubble_classes(block)}">{raw}</div>'
     tr = _strip_render_tags(block.translatedText)
-    return _fallback_bubble_html(tr, block, scan_path) if tr else ""
+    return _fallback_bubble_html(tr, block) if tr else ""
 
 
-def _anchor_bbox_for_block(
-    block: TextBlock,
+def collect_bubble_polygons(
     scan_bgr,
-) -> BoundingBox:
-    """Superpose la bulle créée sur la bulle manga réelle (flood-fill OpenCV)."""
-    bb = block.boundingBox
+    blocks: list[TextBlock],
+) -> dict[int, list[tuple[int, int]]]:
+    """Polygone exact par bulle de dialogue (None pour SFX)."""
     if scan_bgr is None:
-        return bb
-    _, _, bg_hint = _extract_render_hints(block.translatedText)
-    is_sfx = bg_hint is False or _looks_like_sfx_text(block.originalText)
-    if is_sfx:
-        # Onomatopées : rester sur la zone d'encre (pas de bulle blanche).
-        return bb
-    try:
-        return locate_bubble_interior(scan_bgr, bb)
-    except Exception as exc:
-        logger.debug("Localisation bulle échouée (#%s): %s", block.id, exc)
-        return bb
+        return {}
+    out: dict[int, list[tuple[int, int]]] = {}
+    for block in blocks:
+        _, _, bg_hint = _extract_render_hints(block.translatedText)
+        is_sfx = bg_hint is False or _looks_like_sfx_text(block.originalText)
+        if is_sfx:
+            continue
+        try:
+            poly = detect_bubble_polygon(scan_bgr, block.boundingBox)
+            if poly and len(poly) >= 3:
+                out[block.id] = poly
+        except Exception as exc:
+            logger.debug("Polygone bulle #%s: %s", block.id, exc)
+    return out
 
 
 def build_overlay_html(
@@ -230,40 +219,36 @@ def build_overlay_html(
     page_css: str = "",
     scan_path: Path | None = None,
     locate_on: Path | None = None,
+    polygons: dict[int, list[tuple[int, int]]] | None = None,
 ) -> str:
-    """scan_filename : chemin relatif vers le PNG/JPEG à côté du fichier HTML.
-
-    locate_on : scan ORIGINAL pour le flood-fill (avant effacement du texte).
-    """
+    """Texte clipé au polygone exact — aucune nouvelle forme de bulle."""
     css = _sanitize_page_css(page_css)
     bubble_layers: list[str] = []
 
     scan_bgr = None
     locate_path = locate_on or scan_path
-    if locate_path is not None:
+    if polygons is None and locate_path is not None:
         try:
             import cv2
 
             scan_bgr = cv2.imread(str(locate_path))
+            polygons = collect_bubble_polygons(scan_bgr, blocks)
         except Exception:
-            scan_bgr = None
+            polygons = {}
+    polygons = polygons or {}
 
     for block in blocks:
-        inner = _bubble_inner_html(block, scan_path)
+        inner = _bubble_inner_html(block)
         if not inner:
             continue
-        bb = _anchor_bbox_for_block(block, scan_bgr)
+        poly = polygons.get(block.id)
+        if poly:
+            bb = polygon_bbox(shrink_polygon(poly))
+        else:
+            bb = block.boundingBox
         box_w = max(8, bb.x_max - bb.x_min)
         box_h = max(8, bb.y_max - bb.y_min)
         is_sfx = _looks_like_sfx_text(block.originalText)
-        _, _, bg_hint = _extract_render_hints(block.translatedText)
-        # Dialogue (pas SFX) : clip ovale pour coller à la forme manga.
-        is_oval = (not is_sfx) and (bg_hint is not False)
-        if scan_bgr is not None and is_oval:
-            try:
-                is_oval = True  # bulle de dialogue localisée → forme ovale typique
-            except Exception:
-                pass
         font_size = estimate_font_size(
             _strip_render_tags(block.translatedText),
             box_w,
@@ -279,7 +264,7 @@ def build_overlay_html(
                 box_h=box_h,
                 page_width=width,
                 font_size=font_size,
-                is_oval=is_oval,
+                polygon=poly,
             )
         )
 
@@ -307,8 +292,6 @@ def build_overlay_html(
 </html>"""
 
 
-# Playwright sync est lié au thread qui l'a démarré : une instance par thread,
-# réutilisée pour toutes les pages (Chromium ne redémarre plus à chaque page).
 _playwright_state = threading.local()
 
 
@@ -327,7 +310,6 @@ def _get_thread_browser():
 
 
 def close_thread_browser() -> None:
-    """Ferme le Chromium du thread courant (fin de pipeline)."""
     state = getattr(_playwright_state, "state", None)
     if not state:
         return
@@ -369,7 +351,6 @@ def _screenshot_html(html_path: Path, output_path: Path, width: int, height: int
     try:
         _capture()
     except Exception:
-        # Chromium a pu mourir entre deux pages : une seule relance propre.
         close_thread_browser()
         _capture()
 
@@ -381,8 +362,9 @@ def render_page_html_overlays(
     *,
     page_css: str = "",
 ) -> None:
-    """Efface le texte source puis place les bulles HTML/CSS aux coordonnees Cursor."""
+    """Efface l'encre dans le polygone, puis superpose le texte clipé (police seule)."""
     from PIL import Image
+    import cv2
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with Image.open(scan_path) as img:
@@ -394,10 +376,13 @@ def render_page_html_overlays(
 
     blocks = refine_blocks_for_render(scan_path, blocks)
 
+    original_bgr = cv2.imread(str(scan_path))
+    polygons = collect_bubble_polygons(original_bgr, blocks)
+
     html_path = output_path.with_suffix(".overlay.html")
     scan_asset = html_path.with_name(f"{html_path.stem}_scan.png")
 
-    erase_text_regions(scan_path, blocks, scan_asset)
+    erase_text_regions(scan_path, blocks, scan_asset, polygons=polygons)
 
     html_doc = build_overlay_html(
         scan_asset.name,
@@ -406,14 +391,18 @@ def render_page_html_overlays(
         height=height,
         page_css=page_css,
         scan_path=scan_asset,
-        # Flood-fill sur le scan original : la bulle blanche est encore intacte.
         locate_on=scan_path,
+        polygons=polygons,
     )
     html_path.write_text(html_doc, encoding="utf-8")
 
     try:
         _screenshot_html(html_path, output_path, width, height)
-        logger.info("Page composée via HTML/CSS: %s", output_path.name)
+        logger.info(
+            "Page composée (clip polygone, %s bulles formées): %s",
+            len(polygons),
+            output_path.name,
+        )
     except Exception as exc:
         logger.warning("Playwright indisponible (%s), repli PIL", exc)
         from services import rendering

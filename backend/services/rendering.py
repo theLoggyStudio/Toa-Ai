@@ -250,7 +250,7 @@ def detect_bubble_region(
 
     n, _, stats, _ = cv2.connectedComponentsWithStats(white)
     orig_area = max(1, bw * bh)
-    max_bubble_area = min(0.10 * w * h, orig_area * 4)
+    max_bubble_area = min(0.12 * w * h, max(orig_area * 12, 8000))
     for i in range(1, n):
         sx, sy, sw, sh, area = stats[i]
         if area < 120 or area > max_bubble_area:
@@ -322,7 +322,8 @@ def detect_bubble_polygon(
     if bw < 6 or bh < 6:
         return None
 
-    pad = max(24, bw // 2, bh // 2)
+    # Fenêtre assez large pour retrouver une bulle plus grande que la bbox Cursor.
+    pad = max(48, bw * 2, bh * 2, 120)
     rx0 = max(0, x0 - pad)
     ry0 = max(0, y0 - pad)
     rx1 = min(w, x1 + pad)
@@ -331,7 +332,7 @@ def detect_bubble_polygon(
     if gray.size == 0:
         return None
 
-    _, white = cv2.threshold(gray, 172, 255, cv2.THRESH_BINARY)
+    _, white = cv2.threshold(gray, 230, 255, cv2.THRESH_BINARY)
     white = cv2.morphologyEx(
         white,
         cv2.MORPH_CLOSE,
@@ -343,7 +344,8 @@ def detect_bubble_polygon(
     cy = max(0, min(white.shape[0] - 1, (y0 + y1) // 2 - ry0))
     n, labels, stats, _ = cv2.connectedComponentsWithStats(white)
     orig_area = max(1, bw * bh)
-    max_bubble_area = min(0.10 * w * h, orig_area * 4)
+    # Plafond page : autorise les bulles réelles même si la bbox Cursor est minuscule.
+    max_bubble_area = min(0.18 * w * h, max(orig_area * 20, 25_000))
 
     label = int(labels[cy, cx]) if white[cy, cx] > 0 else 0
     if label > 0:
@@ -511,6 +513,34 @@ def _erase_dialogue_ink_white(bgr: np.ndarray, bb: BoundingBox) -> None:
     bgr[y0:y1, x0:x1] = roi
 
 
+def _erase_dialogue_ink_in_polygon(
+    bgr: np.ndarray,
+    polygon: list[tuple[int, int]],
+) -> None:
+    """Efface l'encre uniquement à l'intérieur du polygone exact de la bulle."""
+    if len(polygon) < 3:
+        return
+    h, w = bgr.shape[:2]
+    mask = np.zeros((h, w), dtype=np.uint8)
+    pts = np.array(polygon, dtype=np.int32).reshape((-1, 1, 2))
+    cv2.fillPoly(mask, [pts], 255)
+    # Érosion un peu plus forte : marge intérieure systématique sous le trait.
+    mask = cv2.erode(
+        mask,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
+        iterations=2,
+    )
+    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+    ink = _strict_ink_pixels(gray)
+    ink = cv2.dilate(
+        ink,
+        cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2)),
+        iterations=1,
+    )
+    erase = cv2.bitwise_and(ink, mask)
+    bgr[erase > 0] = (255, 255, 255)
+
+
 def _prepend_render_tags(text: str, tags: str) -> str:
     clean = text or ""
     for tag in ("[[DIR:V]]", "[[DIR:H]]", "[[BG:SOLID]]", "[[BG:TRANSPARENT]]"):
@@ -598,8 +628,10 @@ def erase_text_regions(
     image_path: Path,
     blocks: list[TextBlock],
     output_path: Path,
+    *,
+    polygons: dict[int, list[tuple[int, int]]] | None = None,
 ) -> None:
-    """Efface uniquement l'encre du texte source (inpaint cible, sans peindre la page)."""
+    """Efface uniquement l'encre du texte source (idéalement dans le polygone bulle)."""
     import shutil
 
     bgr = cv2.imread(str(image_path))
@@ -611,6 +643,7 @@ def erase_text_regions(
     page_area = w * h
     max_erase_area = MAX_BBOX_PAGE_RATIO * page_area
     inpaint_mask = np.zeros((h, w), dtype=np.uint8)
+    polygons = polygons or {}
 
     for block in blocks:
         bb = _clip_bbox(block.boundingBox, w, h)
@@ -629,7 +662,11 @@ def erase_text_regions(
         if is_sfx:
             _add_ink_mask(bgr, work_bb, inpaint_mask, dilate_iters=1)
         else:
-            _erase_dialogue_ink_white(bgr, work_bb)
+            poly = polygons.get(block.id)
+            if poly and len(poly) >= 3:
+                _erase_dialogue_ink_in_polygon(bgr, poly)
+            else:
+                _erase_dialogue_ink_white(bgr, work_bb)
 
     if np.any(inpaint_mask):
         bgr = cv2.inpaint(bgr, inpaint_mask, 3, cv2.INPAINT_TELEA)

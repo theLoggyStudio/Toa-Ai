@@ -22,8 +22,8 @@ from services.bubble_fit import (
 )
 from services.rendering import (
     _extract_render_hints,
-    _looks_like_sfx_text,
     detect_bubble_polygon,
+    is_sfx_block,
     refine_blocks_for_render,
 )
 
@@ -144,9 +144,8 @@ def _sanitize_page_css(page_css: str) -> str:
 
 def _bubble_classes(block: TextBlock) -> str:
     classes = ["toa-bubble"]
-    _, dir_hint, bg_hint = _extract_render_hints(block.translatedText)
-    is_sfx = bg_hint is False or _looks_like_sfx_text(block.originalText)
-    if is_sfx:
+    _, dir_hint, _ = _extract_render_hints(block.translatedText)
+    if is_sfx_block(block):
         classes.append("toa-bubble--sfx")
     if dir_hint == "vertical":
         classes.append("toa-bubble--vertical")
@@ -159,9 +158,10 @@ def _fallback_bubble_html(translated: str, block: TextBlock) -> str:
     return f'<div class="{cls}"><p>{safe}</p></div>'
 
 
-def _force_text_only(fragment: str) -> str:
-    """Supprime toute forme/couleur inline Cursor — texte seul en #4A3F35."""
+def _force_text_only(fragment: str, *, is_sfx: bool = False) -> str:
+    """Supprime formes/couleurs Cursor ; fond blanc dialogue, transparent SFX."""
     cleaned = fragment or ""
+    bg = "transparent" if is_sfx else "#ffffff"
     cleaned = re.sub(
         r"color\s*:\s*[^;\"']+;?",
         f"color: {TRANSLATED_TEXT_COLOR};",
@@ -170,7 +170,7 @@ def _force_text_only(fragment: str) -> str:
     )
     cleaned = re.sub(
         r"background(?:-color)?\s*:\s*[^;\"']+;?",
-        "background: #ffffff;",
+        f"background: {bg};",
         cleaned,
         flags=re.IGNORECASE,
     )
@@ -186,6 +186,13 @@ def _force_text_only(fragment: str) -> str:
         cleaned,
         flags=re.IGNORECASE,
     )
+    # Pas de filtre / ombre chromatique générés par le modèle.
+    cleaned = re.sub(
+        r"(?:filter|text-shadow|box-shadow|outline)\s*:\s*[^;\"']+;?",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
     cleaned = re.sub(
         r"""(?:fill|stroke)\s*=\s*['"][^'"]*['"]""",
         "",
@@ -195,12 +202,31 @@ def _force_text_only(fragment: str) -> str:
     return cleaned
 
 
+def _ensure_bubble_class(raw: str, block: TextBlock) -> str:
+    """Garantit toa-bubble / toa-bubble--sfx sur le fragment Cursor."""
+    cls = _bubble_classes(block)
+    if not raw:
+        return ""
+    if re.search(r'class\s*=\s*["\'][^"\']*toa-bubble', raw, flags=re.IGNORECASE):
+        if is_sfx_block(block) and "toa-bubble--sfx" not in raw:
+            return re.sub(
+                r'(class\s*=\s*["\'][^"\']*toa-bubble)',
+                r'\1 toa-bubble--sfx',
+                raw,
+                count=1,
+                flags=re.IGNORECASE,
+            )
+        return raw
+    if "class=" in raw:
+        return raw
+    return f'<div class="{cls}">{raw}</div>'
+
+
 def _bubble_inner_html(block: TextBlock) -> str:
-    raw = _force_text_only((block.bubbleHtml or "").strip())
+    sfx = is_sfx_block(block)
+    raw = _force_text_only((block.bubbleHtml or "").strip(), is_sfx=sfx)
     if raw:
-        if "class=" in raw:
-            return raw
-        return f'<div class="{_bubble_classes(block)}">{raw}</div>'
+        return _ensure_bubble_class(raw, block)
     tr = _strip_render_tags(block.translatedText)
     return _fallback_bubble_html(tr, block) if tr else ""
 
@@ -214,9 +240,7 @@ def collect_bubble_polygons(
         return {}
     out: dict[int, list[tuple[int, int]]] = {}
     for block in blocks:
-        _, _, bg_hint = _extract_render_hints(block.translatedText)
-        is_sfx = bg_hint is False or _looks_like_sfx_text(block.originalText)
-        if is_sfx:
+        if is_sfx_block(block):
             continue
         try:
             poly = detect_bubble_polygon(scan_bgr, block.boundingBox)
@@ -265,7 +289,7 @@ def build_overlay_html(
             bb = block.boundingBox
         box_w = max(8, bb.x_max - bb.x_min)
         box_h = max(8, bb.y_max - bb.y_min)
-        is_sfx = _looks_like_sfx_text(block.originalText)
+        is_sfx = is_sfx_block(block)
         font_size = estimate_font_size(
             _strip_render_tags(block.translatedText),
             box_w,

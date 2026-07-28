@@ -94,19 +94,47 @@ def _load_font(
 
 
 def _looks_like_sfx_text(text: str) -> bool:
+    """Onomatopée JP/KO/latine courte (ex. ぬぽっ!!, Schlop!)."""
     t = (text or "").strip()
     if not t:
         return False
-    if len(t) <= 18 and re.fullmatch(
-        r"[\u30a0-\u30ff\u3040-\u309fー…・！？\sっ゛゜]+", t
-    ):
-        return True
-    if re.search(
-        r"(ゴロ|ドン|ガタ|にゃ|ニャ|わん|ワン|シーン|バキ|ズキ|ドキ|ぎゃ|ギャ|ずん|ズン)",
+    # Kana / hangul courts + ponctuation pleine ou ASCII (! !? …).
+    if len(t) <= 24 and re.fullmatch(
+        r"[\u30a0-\u30ff\u3040-\u309f\uac00-\ud7afー…・！？!?~\-\sっ゛゜]+",
         t,
     ):
         return True
+    if re.search(
+        r"(ゴロ|ドン|ガタ|にゃ|ニャ|わん|ワン|シーン|バキ|ズキ|ドキ|ぎゃ|ギャ|ずん|ズン|ぬぽ|ヌポ)",
+        t,
+    ):
+        return True
+    # Traduction SFX latine courte : « Schlop! », « Boum ! », « GYAAAA ».
+    latin = re.sub(r"\s+", " ", t)
+    if len(latin) <= 16 and re.fullmatch(
+        r"[A-Za-zÀ-ÿ]{1,14}(?:[\s\-'][A-Za-zÀ-ÿ]{1,8}){0,2}\s*[!~]*",
+        latin,
+    ):
+        words = re.findall(r"[A-Za-zÀ-ÿ]+", latin)
+        if words and len(words) <= 2 and all(len(w) <= 10 for w in words):
+            if re.search(r"[!~]$", latin) or (latin.isupper() and len(latin) <= 12):
+                return True
     return False
+
+
+def is_sfx_block(block: TextBlock) -> bool:
+    """SFX si tag BG:TRANSPARENT, texte source onomatopée, ou traduction courte type SFX."""
+    _, _, bg_hint = _extract_render_hints(block.translatedText)
+    if bg_hint is False:
+        return True
+    if _looks_like_sfx_text(block.originalText):
+        return True
+    clean = re.sub(
+        r"\[\[(?:DIR:[VH]|BG:(?:SOLID|TRANSPARENT))\]\]",
+        "",
+        block.translatedText or "",
+    ).strip()
+    return _looks_like_sfx_text(clean)
 
 
 _CJK_RE = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af\uff66-\uff9f]")
@@ -593,7 +621,7 @@ def refine_blocks_for_render(
                 tight if _box_area(tight) < area else cursor_bb, w, h
             )
 
-        is_sfx = _looks_like_sfx_text(block.originalText)
+        is_sfx = is_sfx_block(block)
 
         # Bbox clampée au bord de page (coords détection hors image) :
         # tenter de retrouver la vraie bulle vers l'intérieur, sinon abandonner
@@ -674,7 +702,7 @@ def erase_text_regions(
             )
             continue
 
-        is_sfx = _looks_like_sfx_text(block.originalText)
+        is_sfx = is_sfx_block(block)
         work_bb = _clip_bbox(block.boundingBox, w, h)
         if _box_area(work_bb) > max_erase_area:
             continue
@@ -695,7 +723,7 @@ def erase_text_regions(
 
 
 def _font_candidates_for_block(block: TextBlock) -> list[str]:
-    if _looks_like_sfx_text(block.originalText):
+    if is_sfx_block(block):
         return DEFAULT_SFX_FONTS
     return DEFAULT_DIALOGUE_FONTS
 

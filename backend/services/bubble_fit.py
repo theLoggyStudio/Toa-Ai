@@ -59,7 +59,8 @@ BUBBLE_FIT_CSS = f"""
   align-items: center;
   justify-content: center;
   text-align: center;
-  background: transparent !important;
+  /* Fond blanc clipé au polygone de la bulle originale (pas de nouvelle forme). */
+  background: #ffffff !important;
   border: none !important;
   border-radius: 0 !important;
   padding: {TEXT_PAD_CSS};
@@ -71,12 +72,15 @@ BUBBLE_FIT_CSS = f"""
 .toa-bubble-wrap .toa-bubble,
 .toa-bubble-wrap .toa-bubble * {{
   color: {TRANSLATED_TEXT_COLOR} !important;
-  background: transparent !important;
   border: none !important;
+}}
+.toa-bubble-wrap .toa-bubble p {{
+  background: transparent !important;
 }}
 .toa-bubble-wrap .toa-bubble--sfx {{
   width: 100%;
   height: 100%;
+  background: transparent !important;
   text-shadow: 1px 1px 0 #fff, -1px -1px 0 #fff;
 }}
 .toa-bubble-wrap .toa-bubble--vertical {{

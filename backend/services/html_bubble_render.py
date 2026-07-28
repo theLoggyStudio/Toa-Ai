@@ -74,7 +74,7 @@ html, body {{ overflow: hidden; }}
   align-items: center;
   justify-content: center;
   text-align: center;
-  background: transparent !important;
+  background: #ffffff !important;
   border: none !important;
   border-radius: 0 !important;
   padding: {TEXT_PAD_CSS};
@@ -86,10 +86,15 @@ html, body {{ overflow: hidden; }}
 }}
 .toa-bubble, .toa-bubble * {{
   color: {TRANSLATED_TEXT_COLOR} !important;
-  background: transparent !important;
   border: none !important;
 }}
+.toa-bubble p {{
+  margin: 0;
+  background: transparent !important;
+  color: {TRANSLATED_TEXT_COLOR} !important;
+}}
 .toa-bubble--sfx {{
+  background: transparent !important;
   font-family: "ToaSFX", Impact, "Arial Black", sans-serif;
   font-weight: 900;
   letter-spacing: 0.02em;
@@ -99,7 +104,6 @@ html, body {{ overflow: hidden; }}
   writing-mode: vertical-rl;
   text-orientation: mixed;
 }}
-.toa-bubble p {{ margin: 0; color: {TRANSLATED_TEXT_COLOR} !important; }}
 """.strip()
 
 
@@ -153,7 +157,7 @@ def _force_text_only(fragment: str) -> str:
     )
     cleaned = re.sub(
         r"background(?:-color)?\s*:\s*[^;\"']+;?",
-        "background: transparent;",
+        "background: #ffffff;",
         cleaned,
         flags=re.IGNORECASE,
     )

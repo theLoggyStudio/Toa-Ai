@@ -87,7 +87,7 @@ class TestBuildBubbleWrap:
 
 class TestCssContract:
     def test_no_new_bubble_chrome(self):
-        assert "background: transparent" in BUBBLE_FIT_CSS
+        assert "background: #ffffff" in BUBBLE_FIT_CSS
         assert TRANSLATED_TEXT_COLOR in BUBBLE_FIT_CSS
         assert "translate(-50%" not in BUBBLE_FIT_CSS
 

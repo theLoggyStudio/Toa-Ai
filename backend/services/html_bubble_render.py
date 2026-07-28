@@ -66,17 +66,17 @@ html, body {{ overflow: hidden; }}
   object-fit: fill;
   z-index: 0;
 }}
-/* Superposition toujours au-dessus du scan (et de tout le reste). */
+/* Texte traduit au-dessus de tout (scan, art, autres calques). */
 .bubble-layer {{
   position: absolute;
   inset: 0;
-  z-index: 100 !important;
+  z-index: 1000 !important;
   isolation: isolate;
   pointer-events: none;
 }}
 .toa-bubble {{
   position: relative;
-  z-index: 100 !important;
+  z-index: 1000 !important;
   overflow: hidden;
   display: flex;
   align-items: center;
@@ -92,14 +92,18 @@ html, body {{ overflow: hidden; }}
   padding: {TEXT_PAD_CSS};
   color: {TRANSLATED_TEXT_COLOR} !important;
   font-family: "ToaManga", "Yu Gothic", "Segoe UI", sans-serif;
-  font-weight: 700;
-  line-height: 1.2;
+  font-weight: 800 !important;
+  line-height: 1.25;
   word-wrap: break-word;
+  opacity: 1 !important;
+  text-shadow: 0 0 2px #fff, 1px 0 0 #fff, -1px 0 0 #fff, 0 1px 0 #fff, 0 -1px 0 #fff;
 }}
 .toa-bubble, .toa-bubble * {{
   color: {TRANSLATED_TEXT_COLOR} !important;
   border: none !important;
   background: transparent !important;
+  opacity: 1 !important;
+  font-weight: 800 !important;
 }}
 .toa-bubble p {{
   margin: 0;
@@ -112,9 +116,11 @@ html, body {{ overflow: hidden; }}
   background: transparent !important;
   border-radius: 0;
   font-family: "ToaSFX", Impact, "Arial Black", sans-serif;
-  font-weight: 900;
+  font-weight: 900 !important;
   letter-spacing: 0.02em;
-  text-shadow: 1px 1px 0 #fff, -1px -1px 0 #fff;
+  text-shadow:
+    2px 0 0 #fff, -2px 0 0 #fff, 0 2px 0 #fff, 0 -2px 0 #fff,
+    1px 1px 0 #fff, -1px -1px 0 #fff, 1px -1px 0 #fff, -1px 1px 0 #fff;
 }}
 .toa-bubble--vertical {{
   writing-mode: vertical-rl;
@@ -189,9 +195,16 @@ def _force_text_only(fragment: str, *, is_sfx: bool = False) -> str:
         cleaned,
         flags=re.IGNORECASE,
     )
+    # Conserve la lisibilité : retire filtres colorés, pas le contraste CSS.
     cleaned = re.sub(
-        r"(?:filter|text-shadow|box-shadow|outline)\s*:\s*[^;\"']+;?",
+        r"(?:filter|box-shadow|outline)\s*:\s*[^;\"']+;?",
         "",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(
+        r"opacity\s*:\s*[^;\"']+;?",
+        "opacity: 1;",
         cleaned,
         flags=re.IGNORECASE,
     )
@@ -325,7 +338,7 @@ def build_overlay_html(
 <body style="width:{width}px;height:{height}px;margin:0;">
 <div class="page" style="position:relative;width:{width}px;height:{height}px;">
 <img class="page-scan" src="{safe_scan}" width="{width}" height="{height}" alt=""/>
-<div class="bubble-layer" style="z-index:100 !important;">
+<div class="bubble-layer" style="z-index:1000 !important;">
 {layers_html}
 </div>
 </div>

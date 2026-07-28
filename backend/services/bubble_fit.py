@@ -1,10 +1,11 @@
-"""Superposition stricte : fond blanc CSS (ovale / polygone) + texte par-dessus.
+"""Superposition stricte : fond blanc CSS + texte traduit prioritaire.
 
 Règles :
-1) Localiser la bulle (OpenCV / detect_bubble_polygon) pour ancrer la zone.
+0) PRIORITÉ ABSOLUE : lisibilité du texte traduit (contraste, taille, z-index).
+1) Localiser la bulle (OpenCV) pour ancrer la zone.
 2) Ne JAMAIS modifier le dessin (pas d'effacement / inpaint).
-3) Créer le fond blanc en CSS (ellipse ou clip-path), le superposer, texte transparent dessus.
-4) Seule variable autorisée pour le fit : la taille de police.
+3) Fond blanc CSS (ellipse ou clip-path) sous le texte.
+4) Seule variable de fit : la taille de police (plancher de lisibilité).
 """
 
 from __future__ import annotations
@@ -22,20 +23,25 @@ logger = logging.getLogger(__name__)
 
 Point = tuple[int, int]
 
-TRANSLATED_TEXT_COLOR = "#4A3F35"
-TRANSLATED_TEXT_RGB = (0x4A, 0x3F, 0x35)
+# Contraste max sur fond blanc manga.
+TRANSLATED_TEXT_COLOR = "#111111"
+TRANSLATED_TEXT_RGB = (0x11, 0x11, 0x11)
 
-# Marge intérieure : le texte reste toujours un peu à l'écart du trait noir.
-POLYGON_SHRINK = 0.82
-INNER_PAD_PX = 7
-TEXT_PAD_CSS = "6px 8px"
+TEXT_HALO_CSS = (
+    "0 0 2px #fff, 1px 0 0 #fff, -1px 0 0 #fff, 0 1px 0 #fff, 0 -1px 0 #fff"
+)
+
+POLYGON_SHRINK = 0.85
+INNER_PAD_PX = 6
+TEXT_PAD_CSS = "5px 7px"
+MIN_READABLE_PX = 9
 
 BUBBLE_FIT_CSS = f"""
 .toa-bubble-wrap {{
   position: absolute;
   left: 0;
   top: 0;
-  z-index: 100 !important;
+  z-index: 1000 !important;
   box-sizing: border-box;
   display: flex;
   align-items: center;
@@ -45,7 +51,6 @@ BUBBLE_FIT_CSS = f"""
   background: transparent !important;
   border: none;
 }}
-/* Fond blanc créé en CSS, sous le texte (jamais un détourage bitmap). */
 .toa-bubble-bg {{
   position: absolute;
   inset: 0;
@@ -53,12 +58,11 @@ BUBBLE_FIT_CSS = f"""
   pointer-events: none;
   background: #ffffff !important;
   border: none;
+  opacity: 1 !important;
 }}
-/* Sans polygone détecté : ovale CSS classique manga. */
 .toa-bubble-wrap--ellipse .toa-bubble-bg {{
   border-radius: 50%;
 }}
-/* Avec polygone : le clip-path du wrap découpe le blanc CSS à la forme exacte. */
 .toa-bubble-wrap--poly .toa-bubble-bg {{
   border-radius: 0;
 }}
@@ -68,7 +72,7 @@ BUBBLE_FIT_CSS = f"""
 }}
 .toa-bubble-wrap .toa-bubble-fit {{
   position: relative;
-  z-index: 1;
+  z-index: 2;
   width: 100%;
   height: 100%;
   display: flex;
@@ -77,7 +81,7 @@ BUBBLE_FIT_CSS = f"""
 }}
 .toa-bubble-wrap .toa-bubble {{
   position: relative;
-  z-index: 1;
+  z-index: 3 !important;
   width: 100%;
   height: 100%;
   max-width: 100%;
@@ -88,7 +92,6 @@ BUBBLE_FIT_CSS = f"""
   align-items: center;
   justify-content: center;
   text-align: center;
-  /* Le blanc est sur .toa-bubble-bg, pas sur le texte. */
   background: transparent !important;
   border: none !important;
   border-radius: 0;
@@ -97,16 +100,23 @@ BUBBLE_FIT_CSS = f"""
   word-break: break-word;
   overflow-wrap: anywhere;
   color: {TRANSLATED_TEXT_COLOR} !important;
+  font-weight: 800 !important;
+  opacity: 1 !important;
+  text-shadow: {TEXT_HALO_CSS};
 }}
 .toa-bubble-wrap .toa-bubble,
 .toa-bubble-wrap .toa-bubble * {{
   color: {TRANSLATED_TEXT_COLOR} !important;
   border: none !important;
   background: transparent !important;
+  opacity: 1 !important;
+  font-weight: 800 !important;
+  text-shadow: {TEXT_HALO_CSS};
 }}
 .toa-bubble-wrap .toa-bubble p {{
   background: transparent !important;
   margin: 0;
+  opacity: 1 !important;
 }}
 .toa-bubble-wrap .toa-bubble--sfx {{
   width: max-content;
@@ -115,7 +125,10 @@ BUBBLE_FIT_CSS = f"""
   max-height: 100%;
   background: transparent !important;
   border-radius: 0;
-  text-shadow: 1px 1px 0 #fff, -1px -1px 0 #fff;
+  font-weight: 900 !important;
+  text-shadow:
+    2px 0 0 #fff, -2px 0 0 #fff, 0 2px 0 #fff, 0 -2px 0 #fff,
+    1px 1px 0 #fff, -1px -1px 0 #fff, 1px -1px 0 #fff, -1px 1px 0 #fff;
 }}
 .toa-bubble-wrap .toa-bubble--vertical {{
   writing-mode: vertical-rl;
@@ -123,35 +136,36 @@ BUBBLE_FIT_CSS = f"""
 }}
 """.strip()
 
-# Seule la police change. Le fond blanc CSS (ovale/clip) reste fixe.
-BUBBLE_FIT_SCRIPT = """
-document.querySelectorAll('.toa-bubble-wrap').forEach((wrap) => {
+BUBBLE_FIT_SCRIPT = f"""
+document.querySelectorAll('.toa-bubble-wrap').forEach((wrap) => {{
   const el = wrap.querySelector('.toa-bubble') || wrap.querySelector('.toa-bubble-fit')?.firstElementChild;
   if (!el) return;
   const isSfx = wrap.classList.contains('toa-bubble-wrap--sfx')
     || !!wrap.querySelector('.toa-bubble--sfx');
   const maxW = wrap.clientWidth || parseFloat(wrap.dataset.w) || 60;
   const maxH = wrap.clientHeight || parseFloat(wrap.dataset.h) || 40;
-  const capSize = isSfx ? 42 : 28;
+  const capSize = isSfx ? 44 : 30;
+  const minSize = {MIN_READABLE_PX};
   let size = parseFloat(getComputedStyle(el).fontSize) || 14;
-  const setSize = (s) => { size = s; el.style.fontSize = s.toFixed(1) + 'px'; };
-  const overflows = () => {
-    if (isSfx) {
+  const setSize = (s) => {{ size = s; el.style.fontSize = s.toFixed(1) + 'px'; }};
+  const overflows = () => {{
+    if (isSfx) {{
       const r = el.getBoundingClientRect();
       return r.width > maxW + 1 || r.height > maxH + 1;
-    }
+    }}
     return el.scrollWidth > el.clientWidth + 1
       || el.scrollHeight > el.clientHeight + 1;
-  };
+  }};
 
   let guard = 50;
-  while (guard-- > 0 && size < capSize) {
+  while (guard-- > 0 && size < capSize) {{
     setSize(size + 1);
-    if (overflows()) { setSize(size - 1); break; }
-  }
+    if (overflows()) {{ setSize(size - 1); break; }}
+  }}
   guard = 160;
-  while (guard-- > 0 && size > 5 && overflows()) setSize(size - 0.5);
-});
+  while (guard-- > 0 && size > minSize && overflows()) setSize(size - 0.5);
+  if (size < minSize) setSize(minSize);
+}});
 window.__toaFitDone = true;
 """.strip()
 
@@ -226,10 +240,10 @@ def estimate_font_size(
 ) -> int:
     length = max(1, len((text or "").strip()))
     if is_sfx:
-        return max(11, min(36, int(box_h * 0.38)))
+        return max(12, min(40, int(box_h * 0.42)))
     area = max(1, box_w * box_h)
-    size = int(math.sqrt(area / (length * 0.62 * 1.30)))
-    return max(8, min(24, size))
+    size = int(math.sqrt(area / (length * 0.55 * 1.20)))
+    return max(MIN_READABLE_PX, min(28, size))
 
 
 def build_bubble_wrap(

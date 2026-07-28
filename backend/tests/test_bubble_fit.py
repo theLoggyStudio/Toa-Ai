@@ -23,8 +23,8 @@ class TestEstimateFontSize:
         assert big > small
 
     def test_bounds(self):
-        assert estimate_font_size("x", 2000, 2000) <= 24
-        assert estimate_font_size("mot " * 200, 40, 30) >= 8
+        assert estimate_font_size("x", 2000, 2000) <= 28
+        assert estimate_font_size("mot " * 200, 40, 30) >= 9
 
 
 class TestPolygonHelpers:
@@ -82,8 +82,8 @@ class TestBuildBubbleWrap:
         )
         assert "toa-bubble-wrap--ellipse" in html
         assert 'class="toa-bubble-bg"' in html
-        assert "left:47px" in html  # 40 + INNER_PAD_PX
-        assert "top:67px" in html  # 60 + INNER_PAD_PX
+        assert "left:46px" in html  # 40 + INNER_PAD_PX
+        assert "top:66px" in html  # 60 + INNER_PAD_PX
         assert "translate(-50%" not in html
 
     def test_sfx_has_no_white_bg(self):
@@ -106,9 +106,10 @@ class TestCssContract:
         assert ".toa-bubble-bg" in BUBBLE_FIT_CSS
         assert "border-radius: 50%" in BUBBLE_FIT_CSS
         assert "background: #ffffff" in BUBBLE_FIT_CSS
-        assert "z-index: 100" in BUBBLE_FIT_CSS
+        assert "z-index: 1000" in BUBBLE_FIT_CSS
         assert TRANSLATED_TEXT_COLOR in BUBBLE_FIT_CSS
-        # Texte sans fond blanc propre.
+        assert "font-weight: 800" in BUBBLE_FIT_CSS
+        assert "opacity: 1" in BUBBLE_FIT_CSS
         assert ".toa-bubble-wrap .toa-bubble" in BUBBLE_FIT_CSS
         assert "translate(-50%" not in BUBBLE_FIT_CSS
 

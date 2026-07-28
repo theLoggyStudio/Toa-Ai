@@ -82,13 +82,13 @@ html, body {{ overflow: hidden; }}
   align-items: center;
   justify-content: center;
   text-align: center;
-  width: max-content;
-  height: max-content;
+  width: 100%;
+  height: 100%;
   max-width: 100%;
   max-height: 100%;
-  background: #ffffff !important;
+  background: transparent !important;
   border: none !important;
-  border-radius: 8px;
+  border-radius: 0;
   padding: {TEXT_PAD_CSS};
   color: {TRANSLATED_TEXT_COLOR} !important;
   font-family: "ToaManga", "Yu Gothic", "Segoe UI", sans-serif;
@@ -99,6 +99,7 @@ html, body {{ overflow: hidden; }}
 .toa-bubble, .toa-bubble * {{
   color: {TRANSLATED_TEXT_COLOR} !important;
   border: none !important;
+  background: transparent !important;
 }}
 .toa-bubble p {{
   margin: 0;
@@ -106,6 +107,8 @@ html, body {{ overflow: hidden; }}
   color: {TRANSLATED_TEXT_COLOR} !important;
 }}
 .toa-bubble--sfx {{
+  width: max-content;
+  height: max-content;
   background: transparent !important;
   border-radius: 0;
   font-family: "ToaSFX", Impact, "Arial Black", sans-serif;
@@ -159,9 +162,9 @@ def _fallback_bubble_html(translated: str, block: TextBlock) -> str:
 
 
 def _force_text_only(fragment: str, *, is_sfx: bool = False) -> str:
-    """Supprime formes/couleurs Cursor ; fond blanc dialogue, transparent SFX."""
+    """Supprime formes/couleurs Cursor — fond toujours transparent (blanc = CSS)."""
+    del is_sfx
     cleaned = fragment or ""
-    bg = "transparent" if is_sfx else "#ffffff"
     cleaned = re.sub(
         r"color\s*:\s*[^;\"']+;?",
         f"color: {TRANSLATED_TEXT_COLOR};",
@@ -170,7 +173,7 @@ def _force_text_only(fragment: str, *, is_sfx: bool = False) -> str:
     )
     cleaned = re.sub(
         r"background(?:-color)?\s*:\s*[^;\"']+;?",
-        f"background: {bg};",
+        "background: transparent;",
         cleaned,
         flags=re.IGNORECASE,
     )
@@ -186,7 +189,6 @@ def _force_text_only(fragment: str, *, is_sfx: bool = False) -> str:
         cleaned,
         flags=re.IGNORECASE,
     )
-    # Pas de filtre / ombre chromatique générés par le modèle.
     cleaned = re.sub(
         r"(?:filter|text-shadow|box-shadow|outline)\s*:\s*[^;\"']+;?",
         "",
@@ -305,7 +307,8 @@ def build_overlay_html(
                 box_h=box_h,
                 page_width=width,
                 font_size=font_size,
-                polygon=poly,
+                polygon=poly if not is_sfx else None,
+                is_sfx=is_sfx,
             )
         )
 

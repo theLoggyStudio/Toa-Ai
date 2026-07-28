@@ -53,7 +53,7 @@ class TestPolygonHelpers:
 
 
 class TestBuildBubbleWrap:
-    def test_polygon_uses_clip_path_no_new_shape(self):
+    def test_polygon_uses_clip_path_and_css_bg(self):
         poly = [(100, 50), (200, 50), (200, 120), (100, 120)]
         html = build_bubble_wrap(
             "<p>Salut</p>",
@@ -67,10 +67,10 @@ class TestBuildBubbleWrap:
         )
         assert "clip-path:polygon(" in html
         assert "toa-bubble-wrap--poly" in html
-        assert "background:transparent" not in html or True  # fond via CSS
+        assert 'class="toa-bubble-bg"' in html
         assert "border: 1px" not in html
 
-    def test_aabb_fallback_applies_inner_margin(self):
+    def test_ellipse_fallback_css_bg(self):
         html = build_bubble_wrap(
             "<p>x</p>",
             box_x_min=40,
@@ -80,18 +80,36 @@ class TestBuildBubbleWrap:
             page_width=800,
             font_size=12,
         )
+        assert "toa-bubble-wrap--ellipse" in html
+        assert 'class="toa-bubble-bg"' in html
         assert "left:47px" in html  # 40 + INNER_PAD_PX
         assert "top:67px" in html  # 60 + INNER_PAD_PX
         assert "translate(-50%" not in html
 
+    def test_sfx_has_no_white_bg(self):
+        html = build_bubble_wrap(
+            "<p>Schlop!</p>",
+            box_x_min=10,
+            box_y_min=10,
+            box_w=60,
+            box_h=30,
+            page_width=800,
+            font_size=16,
+            is_sfx=True,
+        )
+        assert "toa-bubble-wrap--sfx" in html
+        assert "toa-bubble-bg" not in html
+
 
 class TestCssContract:
-    def test_no_new_bubble_chrome(self):
+    def test_css_white_layer_under_text(self):
+        assert ".toa-bubble-bg" in BUBBLE_FIT_CSS
+        assert "border-radius: 50%" in BUBBLE_FIT_CSS
         assert "background: #ffffff" in BUBBLE_FIT_CSS
-        assert "max-content" in BUBBLE_FIT_CSS
-        assert "background: transparent !important" in BUBBLE_FIT_CSS
         assert "z-index: 100" in BUBBLE_FIT_CSS
         assert TRANSLATED_TEXT_COLOR in BUBBLE_FIT_CSS
+        # Texte sans fond blanc propre.
+        assert ".toa-bubble-wrap .toa-bubble" in BUBBLE_FIT_CSS
         assert "translate(-50%" not in BUBBLE_FIT_CSS
 
     def test_script_only_font(self):

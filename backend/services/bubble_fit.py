@@ -1,10 +1,10 @@
-"""Superposition stricte : texte clipé au polygone exact de la bulle manga.
+"""Superposition stricte : fond blanc CSS (ovale / polygone) + texte par-dessus.
 
-Règles (aucune exception pour le dialogue) :
-1) Localiser le contour exact de la bulle (OpenCV / detect_bubble_polygon).
-2) Ne JAMAIS modifier le dessin (pas d'effacement / inpaint / blancheur de panneau).
-3) Clipper le texte au polygone (CSS clip-path) ; fond blanc uniquement derrière le texte.
-4) Seule variable autorisée : la taille de police (fit binaire).
+Règles :
+1) Localiser la bulle (OpenCV / detect_bubble_polygon) pour ancrer la zone.
+2) Ne JAMAIS modifier le dessin (pas d'effacement / inpaint).
+3) Créer le fond blanc en CSS (ellipse ou clip-path), le superposer, texte transparent dessus.
+4) Seule variable autorisée pour le fit : la taille de police.
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ TRANSLATED_TEXT_RGB = (0x4A, 0x3F, 0x35)
 # Marge intérieure : le texte reste toujours un peu à l'écart du trait noir.
 POLYGON_SHRINK = 0.82
 INNER_PAD_PX = 7
-TEXT_PAD_CSS = "7px 9px"
+TEXT_PAD_CSS = "6px 8px"
 
 BUBBLE_FIT_CSS = f"""
 .toa-bubble-wrap {{
@@ -42,19 +42,44 @@ BUBBLE_FIT_CSS = f"""
   justify-content: center;
   pointer-events: none;
   overflow: hidden;
-  /* Le wrap ne peint RIEN : il limite seulement la zone utile. */
   background: transparent !important;
   border: none;
 }}
-.toa-bubble-wrap--poly {{
-  /* clip-path fourni en inline (polygone exact de la bulle). */
+/* Fond blanc créé en CSS, sous le texte (jamais un détourage bitmap). */
+.toa-bubble-bg {{
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background: #ffffff !important;
+  border: none;
+}}
+/* Sans polygone détecté : ovale CSS classique manga. */
+.toa-bubble-wrap--ellipse .toa-bubble-bg {{
+  border-radius: 50%;
+}}
+/* Avec polygone : le clip-path du wrap découpe le blanc CSS à la forme exacte. */
+.toa-bubble-wrap--poly .toa-bubble-bg {{
+  border-radius: 0;
+}}
+.toa-bubble-wrap--sfx .toa-bubble-bg {{
+  display: none !important;
+  background: transparent !important;
+}}
+.toa-bubble-wrap .toa-bubble-fit {{
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }}
 .toa-bubble-wrap .toa-bubble {{
-  /* Fond blanc UNIQUEMENT derrière le texte (pas toute la bulle / panneau). */
   position: relative;
-  z-index: 100 !important;
-  width: max-content;
-  height: max-content;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
   max-width: 100%;
   max-height: 100%;
   box-sizing: border-box;
@@ -63,9 +88,10 @@ BUBBLE_FIT_CSS = f"""
   align-items: center;
   justify-content: center;
   text-align: center;
-  background: #ffffff !important;
+  /* Le blanc est sur .toa-bubble-bg, pas sur le texte. */
+  background: transparent !important;
   border: none !important;
-  border-radius: 8px;
+  border-radius: 0;
   padding: {TEXT_PAD_CSS};
   white-space: normal;
   word-break: break-word;
@@ -76,6 +102,7 @@ BUBBLE_FIT_CSS = f"""
 .toa-bubble-wrap .toa-bubble * {{
   color: {TRANSLATED_TEXT_COLOR} !important;
   border: none !important;
+  background: transparent !important;
 }}
 .toa-bubble-wrap .toa-bubble p {{
   background: transparent !important;
@@ -96,21 +123,24 @@ BUBBLE_FIT_CSS = f"""
 }}
 """.strip()
 
-# Seule la police change. Le wrap (transparent) borne la zone ; le blanc épouse le texte.
+# Seule la police change. Le fond blanc CSS (ovale/clip) reste fixe.
 BUBBLE_FIT_SCRIPT = """
 document.querySelectorAll('.toa-bubble-wrap').forEach((wrap) => {
-  const el = wrap.querySelector('.toa-bubble') || wrap.firstElementChild;
+  const el = wrap.querySelector('.toa-bubble') || wrap.querySelector('.toa-bubble-fit')?.firstElementChild;
   if (!el) return;
-  const isSfx = !!wrap.querySelector('.toa-bubble--sfx');
+  const isSfx = wrap.classList.contains('toa-bubble-wrap--sfx')
+    || !!wrap.querySelector('.toa-bubble--sfx');
   const maxW = wrap.clientWidth || parseFloat(wrap.dataset.w) || 60;
   const maxH = wrap.clientHeight || parseFloat(wrap.dataset.h) || 40;
   const capSize = isSfx ? 42 : 28;
   let size = parseFloat(getComputedStyle(el).fontSize) || 14;
   const setSize = (s) => { size = s; el.style.fontSize = s.toFixed(1) + 'px'; };
   const overflows = () => {
-    const r = el.getBoundingClientRect();
-    return r.width > maxW + 1 || r.height > maxH + 1
-      || el.scrollWidth > el.clientWidth + 1
+    if (isSfx) {
+      const r = el.getBoundingClientRect();
+      return r.width > maxW + 1 || r.height > maxH + 1;
+    }
+    return el.scrollWidth > el.clientWidth + 1
       || el.scrollHeight > el.clientHeight + 1;
   };
 
@@ -212,16 +242,29 @@ def build_bubble_wrap(
     page_width: int,
     font_size: int,
     polygon: Sequence[Point] | None = None,
+    is_sfx: bool = False,
 ) -> str:
-    """Zone texte = AABB de la bulle ; forme = clip-path polygone exact.
+    """Ancre la zone + superpose un fond blanc CSS (ovale ou clip polygone)."""
+    bg = "" if is_sfx else '<div class="toa-bubble-bg" aria-hidden="true"></div>'
+    fit_open = f'<div class="toa-bubble-fit" style="font-size:{font_size}px;">'
+    fit_close = "</div>"
 
-    Aucune nouvelle bulle n'est dessinée : fond transparent + clip uniquement.
-    Une petite marge intérieure est toujours appliquée.
-    """
+    if is_sfx:
+        pad = INNER_PAD_PX
+        x0 = box_x_min + pad
+        y0 = box_y_min + pad
+        max_w = max(12, min(box_w - 2 * pad, max(40, page_width - 16)))
+        max_h = max(12, box_h - 2 * pad)
+        style = f"left:{x0}px;top:{y0}px;width:{max_w}px;height:{max_h}px;"
+        return (
+            f'<div class="toa-bubble-wrap toa-bubble-wrap--sfx" '
+            f'data-w="{max_w}" data-h="{max_h}" style="{style}">'
+            f"{fit_open}{inner_html}{fit_close}</div>"
+        )
+
     if polygon and len(polygon) >= 3:
         text_poly = shrink_polygon(polygon)
         bb = polygon_bbox(text_poly)
-        # Marge pixel supplémentaire autour du polygone déjà resserré.
         x0 = max(0, bb.x_min + INNER_PAD_PX // 2)
         y0 = max(0, bb.y_min + INNER_PAD_PX // 2)
         x1 = max(x0 + 12, bb.x_max - INNER_PAD_PX // 2)
@@ -236,25 +279,20 @@ def build_bubble_wrap(
         return (
             f'<div class="toa-bubble-wrap toa-bubble-wrap--poly" '
             f'data-w="{w}" data-h="{h}" style="{style}">'
-            f'<div style="font-size:{font_size}px;width:100%;height:100%;">'
-            f"{inner_html}</div></div>"
+            f"{bg}{fit_open}{inner_html}{fit_close}</div>"
         )
 
-    # Repli SFX / sans polygone : AABB avec petite marge intérieure.
+    # Repli dialogue sans polygone : ovale CSS (border-radius 50%).
     pad = INNER_PAD_PX
     x0 = box_x_min + pad
     y0 = box_y_min + pad
     max_w = max(12, min(box_w - 2 * pad, max(40, page_width - 16)))
     max_h = max(12, box_h - 2 * pad)
-    style = (
-        f"left:{x0}px;top:{y0}px;"
-        f"width:{max_w}px;height:{max_h}px;"
-    )
+    style = f"left:{x0}px;top:{y0}px;width:{max_w}px;height:{max_h}px;"
     return (
-        f'<div class="toa-bubble-wrap" data-w="{max_w}" data-h="{max_h}" '
-        f'style="{style}">'
-        f'<div style="font-size:{font_size}px;width:100%;height:100%;">'
-        f"{inner_html}</div></div>"
+        f'<div class="toa-bubble-wrap toa-bubble-wrap--ellipse" '
+        f'data-w="{max_w}" data-h="{max_h}" style="{style}">'
+        f"{bg}{fit_open}{inner_html}{fit_close}</div>"
     )
 
 
@@ -265,12 +303,12 @@ def locate_bubble_interior(
     white_thresh: int = 242,
 ) -> BoundingBox:
     """AABB de la bulle (repli) — préférer detect_bubble_polygon pour la forme."""
+    del white_thresh
     from services.rendering import detect_bubble_polygon
 
     poly = detect_bubble_polygon(bgr, bb)
     if poly and len(poly) >= 3:
         return polygon_bbox(shrink_polygon(poly))
-    # Repli AABB inset
     h, w = bgr.shape[:2]
     return BoundingBox(
         x_min=max(0, bb.x_min + INNER_PAD_PX),

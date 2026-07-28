@@ -12,12 +12,14 @@ from services.bubble_fit import (
     content_inner_pad,
     estimate_font_size,
     estimate_original_font_size,
+    format_lines_html,
     polygon_bbox,
     polygon_centroid,
     polygon_to_clip_path,
     resolve_placement_boxes,
     separate_overlapping_boxes,
     shrink_polygon,
+    wrap_max_words_per_line,
 )
 
 
@@ -50,6 +52,17 @@ class TestContentPad:
         long = content_inner_pad("phrase " * 40, 120, 80)
         assert short <= long
         assert short <= 3
+
+
+class TestMaxWordsPerLine:
+    def test_wraps_every_three_words(self):
+        lines = wrap_max_words_per_line("Ah bon Tant mieux pour toi et encore")
+        assert lines == ["Ah bon Tant", "mieux pour toi", "et encore"]
+        assert all(len(line.split()) <= 3 for line in lines)
+
+    def test_format_html_br(self):
+        html = format_lines_html("un deux trois quatre")
+        assert html == "un deux trois<br/>quatre"
 
 
 class TestPolygonHelpers:

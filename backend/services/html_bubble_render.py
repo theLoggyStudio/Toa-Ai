@@ -21,6 +21,7 @@ from services.bubble_fit import (
     content_inner_pad,
     estimate_font_size,
     estimate_original_font_size,
+    format_lines_html,
     polygon_bbox,
     resolve_placement_boxes,
     shrink_polygon,
@@ -171,9 +172,10 @@ def _bubble_classes(block: TextBlock) -> str:
 
 
 def _fallback_bubble_html(translated: str, block: TextBlock) -> str:
-    safe = html.escape(_strip_render_tags(translated))
+    # Max 3 mots / ligne — retour à la ligne forcé.
+    body = format_lines_html(_strip_render_tags(translated))
     cls = _bubble_classes(block)
-    return f'<div class="{cls}"><p>{safe}</p></div>'
+    return f'<div class="{cls}"><p>{body}</p></div>'
 
 
 def _force_text_only(fragment: str, *, is_sfx: bool = False) -> str:
@@ -247,10 +249,7 @@ def _ensure_bubble_class(raw: str, block: TextBlock) -> str:
 
 
 def _bubble_inner_html(block: TextBlock) -> str:
-    sfx = is_sfx_block(block)
-    raw = _force_text_only((block.bubbleHtml or "").strip(), is_sfx=sfx)
-    if raw:
-        return _ensure_bubble_class(raw, block)
+    """Toujours depuis la traduction, max 3 mots / ligne (ignore le HTML Cursor)."""
     tr = _strip_render_tags(block.translatedText)
     return _fallback_bubble_html(tr, block) if tr else ""
 

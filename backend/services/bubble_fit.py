@@ -6,6 +6,7 @@ Règles :
 2) Ne JAMAIS modifier le dessin (pas d'effacement / inpaint).
 3) Fond blanc CSS (ellipse ou clip-path) sous le texte.
 4) Marges réduites selon le contenu ; taille max = police originale estimée.
+5) Au plus 3 mots par ligne (retour à la ligne forcé).
 """
 
 from __future__ import annotations
@@ -37,6 +38,31 @@ TEXT_PAD_CSS = "2px 4px"
 MIN_READABLE_PX = 9
 MIN_PAD_PX = 2
 MAX_PAD_PX = 5
+MAX_WORDS_PER_LINE = 3
+
+
+def wrap_max_words_per_line(
+    text: str,
+    *,
+    max_words: int = MAX_WORDS_PER_LINE,
+) -> list[str]:
+    """Découpe le texte : au plus `max_words` mots par ligne (retour à la ligne après)."""
+    words = re.findall(r"\S+", (text or "").strip())
+    if not words:
+        return []
+    limit = max(1, int(max_words))
+    return [
+        " ".join(words[i : i + limit])
+        for i in range(0, len(words), limit)
+    ]
+
+
+def format_lines_html(text: str, *, max_words: int = MAX_WORDS_PER_LINE) -> str:
+    """HTML échappé avec <br/> entre les lignes (max 3 mots / ligne)."""
+    import html as html_mod
+
+    lines = wrap_max_words_per_line(text, max_words=max_words)
+    return "<br/>".join(html_mod.escape(line) for line in lines)
 
 BUBBLE_FIT_CSS = f"""
 .toa-bubble-wrap {{

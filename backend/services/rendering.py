@@ -858,22 +858,12 @@ def _adaptive_font_cap(box_w: int, box_h: int) -> int:
 
 
 def _wrap_text(text: str, font: ImageFont.FreeTypeFont, max_width: int) -> list[str]:
-    if max_width < 8:
-        return [text[:1]] if text else []
-    words = text.split()
-    if not words:
-        return [text] if text else []
-    lines: list[str] = []
-    current = words[0]
-    for word in words[1:]:
-        test = f"{current} {word}"
-        if font.getbbox(test)[2] - font.getbbox(test)[0] <= max_width:
-            current = test
-        else:
-            lines.append(current)
-            current = word
-    lines.append(current)
-    return lines
+    """Au plus 3 mots par ligne ; si encore trop large, découpe plus finement."""
+    from services.bubble_fit import wrap_max_words_per_line
+
+    del font, max_width  # la réduction de police gère le débordement
+    lines = wrap_max_words_per_line(text)
+    return lines if lines else ([text] if text else [])
 
 
 def _layout_metrics(

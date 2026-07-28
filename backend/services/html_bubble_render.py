@@ -15,9 +15,12 @@ from services.bubble_fit import (
     BUBBLE_FIT_SCRIPT,
     TEXT_PAD_CSS,
     TRANSLATED_TEXT_COLOR,
+    boxes_iou,
+    boxes_overlap,
     build_bubble_wrap,
     estimate_font_size,
     polygon_bbox,
+    resolve_placement_boxes,
     shrink_polygon,
 )
 from services.rendering import (
@@ -277,11 +280,10 @@ def build_overlay_html(
     locate_on: Path | None = None,
     polygons: dict[int, list[tuple[int, int]]] | None = None,
 ) -> str:
-    """Texte clipé au polygone exact — aucune nouvelle forme de bulle."""
+    """Texte + fond CSS ; jamais deux bulles traduites superposées."""
     css = _sanitize_page_css(page_css)
     bubble_layers: list[str] = []
 
-    scan_bgr = None
     locate_path = locate_on or scan_path
     if polygons is None and locate_path is not None:
         try:
@@ -293,39 +295,73 @@ def build_overlay_html(
             polygons = {}
     polygons = polygons or {}
 
+    # 1) Calculer les boîtes candidates (polygone ou bbox Cursor).
+    candidates: list[tuple[TextBlock, BoundingBox, list | None, bool]] = []
     for block in blocks:
         inner = _bubble_inner_html(block)
         if not inner:
             continue
-        poly = polygons.get(block.id)
+        is_sfx = is_sfx_block(block)
+        poly = None if is_sfx else polygons.get(block.id)
         if poly:
             bb = polygon_bbox(shrink_polygon(poly))
         else:
             bb = block.boundingBox
-        box_w = max(8, bb.x_max - bb.x_min)
-        box_h = max(8, bb.y_max - bb.y_min)
-        is_sfx = is_sfx_block(block)
-        font_size = estimate_font_size(
-            _strip_render_tags(block.translatedText),
-            box_w,
-            box_h,
-            is_sfx=is_sfx,
-        )
-        bubble_layers.append(
-            build_bubble_wrap(
-                inner,
-                box_x_min=bb.x_min,
-                box_y_min=bb.y_min,
-                box_w=box_w,
-                box_h=box_h,
-                page_width=width,
-                font_size=font_size,
-                polygon=poly if not is_sfx else None,
-                is_sfx=is_sfx,
-            )
+        candidates.append((block, bb, poly, is_sfx))
+
+    if not candidates:
+        layers_html = ""
+    else:
+        # Si deux polygones se marchent dessus, revenir aux bbox Cursor (plus serrées).
+        seed_boxes = [c[1] for c in candidates]
+        for i in range(len(candidates)):
+            for j in range(i + 1, len(candidates)):
+                if boxes_iou(seed_boxes[i], seed_boxes[j]) >= 0.08 or boxes_overlap(
+                    seed_boxes[i], seed_boxes[j], gap=2
+                ):
+                    bi, bj = candidates[i][0], candidates[j][0]
+                    seed_boxes[i] = bi.boundingBox
+                    seed_boxes[j] = bj.boundingBox
+                    candidates[i] = (bi, seed_boxes[i], None, candidates[i][3])
+                    candidates[j] = (bj, seed_boxes[j], None, candidates[j][3])
+
+        seed_boxes = [c[1] for c in candidates]
+        want_poly = [c[2] is not None and not c[3] for c in candidates]
+        placed, keep_poly = resolve_placement_boxes(
+            seed_boxes,
+            page_w=width,
+            page_h=height,
+            use_polygon_flags=want_poly,
         )
 
-    layers_html = "\n".join(bubble_layers)
+        for idx, (block, _seed, poly, is_sfx) in enumerate(candidates):
+            bb = placed[idx]
+            box_w = max(8, bb.x_max - bb.x_min)
+            box_h = max(8, bb.y_max - bb.y_min)
+            font_size = estimate_font_size(
+                _strip_render_tags(block.translatedText),
+                box_w,
+                box_h,
+                is_sfx=is_sfx,
+            )
+            use_poly = (
+                poly if (keep_poly[idx] and poly is not None and not is_sfx) else None
+            )
+            bubble_layers.append(
+                build_bubble_wrap(
+                    _bubble_inner_html(block),
+                    box_x_min=bb.x_min,
+                    box_y_min=bb.y_min,
+                    box_w=box_w,
+                    box_h=box_h,
+                    page_width=width,
+                    font_size=font_size,
+                    polygon=use_poly,
+                    is_sfx=is_sfx,
+                )
+            )
+        layers_html = "\n".join(bubble_layers)
+
     safe_scan = html.escape(scan_filename, quote=True)
     return f"""<!DOCTYPE html>
 <html lang="fr">

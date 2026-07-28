@@ -246,6 +246,148 @@ def estimate_font_size(
     return max(MIN_READABLE_PX, min(28, size))
 
 
+def _box_area(bb: BoundingBox) -> int:
+    return max(0, bb.x_max - bb.x_min) * max(0, bb.y_max - bb.y_min)
+
+
+def boxes_iou(a: BoundingBox, b: BoundingBox) -> float:
+    ix0 = max(a.x_min, b.x_min)
+    iy0 = max(a.y_min, b.y_min)
+    ix1 = min(a.x_max, b.x_max)
+    iy1 = min(a.y_max, b.y_max)
+    inter = max(0, ix1 - ix0) * max(0, iy1 - iy0)
+    if inter <= 0:
+        return 0.0
+    union = _box_area(a) + _box_area(b) - inter
+    return float(inter) / max(1, union)
+
+
+def boxes_overlap(a: BoundingBox, b: BoundingBox, *, gap: int = 6) -> bool:
+    """True si les boîtes se touchent ou se chevauchent (avec marge gap)."""
+    return not (
+        a.x_max + gap <= b.x_min
+        or b.x_max + gap <= a.x_min
+        or a.y_max + gap <= b.y_min
+        or b.y_max + gap <= a.y_min
+    )
+
+
+def _shift_box(
+    bb: BoundingBox,
+    *,
+    dx: int = 0,
+    dy: int = 0,
+    page_w: int,
+    page_h: int,
+) -> BoundingBox:
+    w = bb.x_max - bb.x_min
+    h = bb.y_max - bb.y_min
+    x0 = max(0, min(bb.x_min + dx, max(0, page_w - w)))
+    y0 = max(0, min(bb.y_min + dy, max(0, page_h - h)))
+    return BoundingBox(x_min=x0, y_min=y0, x_max=x0 + w, y_max=y0 + h)
+
+
+def separate_overlapping_boxes(
+    boxes: list[BoundingBox],
+    *,
+    page_w: int,
+    page_h: int,
+    gap: int = 10,
+    max_iters: int = 40,
+) -> list[BoundingBox]:
+    """Écarte les boîtes qui se superposent (priorité : ne jamais empiler 2 textes).
+
+    Stratégie : pour chaque paire en conflit, pousser la boîte de droite / du bas
+    juste assez pour respecter `gap` pixels entre elles.
+    """
+    if len(boxes) < 2:
+        return list(boxes)
+
+    out = [
+        BoundingBox(x_min=b.x_min, y_min=b.y_min, x_max=b.x_max, y_max=b.y_max)
+        for b in boxes
+    ]
+
+    for _ in range(max_iters):
+        moved = False
+        # Traiter de gauche à droite / haut en bas : ancrer la 1re, déplacer la 2e.
+        order = sorted(range(len(out)), key=lambda i: (out[i].y_min, out[i].x_min))
+        for ai in range(len(order)):
+            for bi in range(ai + 1, len(order)):
+                i, j = order[ai], order[bi]
+                a, b = out[i], out[j]
+                if not boxes_overlap(a, b, gap=gap):
+                    continue
+                # Direction préférée : horizontal si plus « côte à côte », sinon vertical.
+                a_cx = (a.x_min + a.x_max) / 2
+                b_cx = (b.x_min + b.x_max) / 2
+                a_cy = (a.y_min + a.y_max) / 2
+                b_cy = (b.y_min + b.y_max) / 2
+                prefer_x = abs(b_cx - a_cx) >= abs(b_cy - a_cy) * 0.55
+
+                if prefer_x:
+                    # Pousser b à droite de a (ou a à gauche de b si b est déjà à gauche).
+                    if b_cx >= a_cx:
+                        need = (a.x_max + gap) - b.x_min
+                        if need > 0:
+                            out[j] = _shift_box(b, dx=need, page_w=page_w, page_h=page_h)
+                            moved = True
+                    else:
+                        need = (b.x_max + gap) - a.x_min
+                        if need > 0:
+                            out[i] = _shift_box(a, dx=need, page_w=page_w, page_h=page_h)
+                            moved = True
+                else:
+                    if b_cy >= a_cy:
+                        need = (a.y_max + gap) - b.y_min
+                        if need > 0:
+                            out[j] = _shift_box(b, dy=need, page_w=page_w, page_h=page_h)
+                            moved = True
+                    else:
+                        need = (b.y_max + gap) - a.y_min
+                        if need > 0:
+                            out[i] = _shift_box(a, dy=need, page_w=page_w, page_h=page_h)
+                            moved = True
+        if not moved:
+            break
+    return out
+
+
+def resolve_placement_boxes(
+    seed_boxes: list[BoundingBox],
+    *,
+    page_w: int,
+    page_h: int,
+    use_polygon_flags: list[bool] | None = None,
+) -> tuple[list[BoundingBox], list[bool]]:
+    """Sépare les placements ; si conflit fort, abandonne le polygone (ovale AABB)."""
+    n = len(seed_boxes)
+    keep_poly = list(use_polygon_flags) if use_polygon_flags is not None else [True] * n
+    if n < 2:
+        return list(seed_boxes), keep_poly
+
+    # Si deux polygones/bboxes se chevauchent beaucoup → AABB séparés sans clip polygone.
+    for i in range(n):
+        for j in range(i + 1, n):
+            if boxes_iou(seed_boxes[i], seed_boxes[j]) >= 0.12 or boxes_overlap(
+                seed_boxes[i], seed_boxes[j], gap=4
+            ):
+                keep_poly[i] = False
+                keep_poly[j] = False
+
+    separated = separate_overlapping_boxes(
+        seed_boxes, page_w=page_w, page_h=page_h, gap=10
+    )
+    # Tout déplacement invalide le clip polygone d'origine.
+    for i in range(n):
+        if (
+            separated[i].x_min != seed_boxes[i].x_min
+            or separated[i].y_min != seed_boxes[i].y_min
+        ):
+            keep_poly[i] = False
+    return separated, keep_poly
+
+
 def build_bubble_wrap(
     inner_html: str,
     *,

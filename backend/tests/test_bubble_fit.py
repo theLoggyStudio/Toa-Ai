@@ -7,11 +7,14 @@ from services.bubble_fit import (
     BUBBLE_FIT_CSS,
     BUBBLE_FIT_SCRIPT,
     TRANSLATED_TEXT_COLOR,
+    boxes_overlap,
     build_bubble_wrap,
     estimate_font_size,
     polygon_bbox,
     polygon_centroid,
     polygon_to_clip_path,
+    resolve_placement_boxes,
+    separate_overlapping_boxes,
     shrink_polygon,
 )
 
@@ -101,7 +104,22 @@ class TestBuildBubbleWrap:
         assert "toa-bubble-bg" not in html
 
 
-class TestCssContract:
+class TestSeparateOverlaps:
+    def test_side_by_side_no_overlap_after(self):
+        a = BoundingBox(x_min=10, y_min=10, x_max=80, y_max=70)
+        b = BoundingBox(x_min=60, y_min=20, x_max=130, y_max=80)
+        out = separate_overlapping_boxes([a, b], page_w=400, page_h=400, gap=10)
+        assert not boxes_overlap(out[0], out[1], gap=9)
+
+    def test_resolve_drops_polygon_on_conflict(self):
+        a = BoundingBox(x_min=0, y_min=0, x_max=100, y_max=80)
+        b = BoundingBox(x_min=40, y_min=10, x_max=140, y_max=90)
+        placed, keep = resolve_placement_boxes(
+            [a, b], page_w=500, page_h=500, use_polygon_flags=[True, True]
+        )
+        assert keep == [False, False]
+        assert not boxes_overlap(placed[0], placed[1], gap=9)
+
     def test_css_white_layer_under_text(self):
         assert ".toa-bubble-bg" in BUBBLE_FIT_CSS
         assert "border-radius: 50%" in BUBBLE_FIT_CSS

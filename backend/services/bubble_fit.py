@@ -2,8 +2,8 @@
 
 Règles (aucune exception pour le dialogue) :
 1) Localiser le contour exact de la bulle (OpenCV / detect_bubble_polygon).
-2) Ne JAMAIS redessiner forme, bordure ni fond — la bulle originale reste.
-3) Clipper le texte au polygone (CSS clip-path).
+2) Ne JAMAIS modifier le dessin (pas d'effacement / inpaint / blancheur de panneau).
+3) Clipper le texte au polygone (CSS clip-path) ; fond blanc uniquement derrière le texte.
 4) Seule variable autorisée : la taille de police (fit binaire).
 """
 
@@ -41,16 +41,17 @@ BUBBLE_FIT_CSS = f"""
   justify-content: center;
   pointer-events: none;
   overflow: hidden;
-  /* Pas de fond / bordure : on n'ajoute aucune forme. */
-  background: transparent;
+  /* Le wrap ne peint RIEN : il limite seulement la zone utile. */
+  background: transparent !important;
   border: none;
 }}
 .toa-bubble-wrap--poly {{
   /* clip-path fourni en inline (polygone exact de la bulle). */
 }}
 .toa-bubble-wrap .toa-bubble {{
-  width: 100%;
-  height: 100%;
+  /* Fond blanc UNIQUEMENT derrière le texte (pas toute la bulle / panneau). */
+  width: max-content;
+  height: max-content;
   max-width: 100%;
   max-height: 100%;
   box-sizing: border-box;
@@ -59,10 +60,9 @@ BUBBLE_FIT_CSS = f"""
   align-items: center;
   justify-content: center;
   text-align: center;
-  /* Fond blanc clipé au polygone de la bulle originale (pas de nouvelle forme). */
   background: #ffffff !important;
   border: none !important;
-  border-radius: 0 !important;
+  border-radius: 8px;
   padding: {TEXT_PAD_CSS};
   white-space: normal;
   word-break: break-word;
@@ -76,11 +76,15 @@ BUBBLE_FIT_CSS = f"""
 }}
 .toa-bubble-wrap .toa-bubble p {{
   background: transparent !important;
+  margin: 0;
 }}
 .toa-bubble-wrap .toa-bubble--sfx {{
-  width: 100%;
-  height: 100%;
+  width: max-content;
+  height: max-content;
+  max-width: 100%;
+  max-height: 100%;
   background: transparent !important;
+  border-radius: 0;
   text-shadow: 1px 1px 0 #fff, -1px -1px 0 #fff;
 }}
 .toa-bubble-wrap .toa-bubble--vertical {{
@@ -89,19 +93,24 @@ BUBBLE_FIT_CSS = f"""
 }}
 """.strip()
 
-# Seule la police change. Le wrap a déjà la taille/forme de la bulle originale.
+# Seule la police change. Le wrap (transparent) borne la zone ; le blanc épouse le texte.
 BUBBLE_FIT_SCRIPT = """
 document.querySelectorAll('.toa-bubble-wrap').forEach((wrap) => {
   const el = wrap.querySelector('.toa-bubble') || wrap.firstElementChild;
   if (!el) return;
   const isSfx = !!wrap.querySelector('.toa-bubble--sfx');
+  const maxW = wrap.clientWidth || parseFloat(wrap.dataset.w) || 60;
+  const maxH = wrap.clientHeight || parseFloat(wrap.dataset.h) || 40;
   const capSize = isSfx ? 42 : 28;
   let size = parseFloat(getComputedStyle(el).fontSize) || 14;
   const setSize = (s) => { size = s; el.style.fontSize = s.toFixed(1) + 'px'; };
-  const overflows = () =>
-    el.scrollWidth > el.clientWidth + 1 || el.scrollHeight > el.clientHeight + 1;
+  const overflows = () => {
+    const r = el.getBoundingClientRect();
+    return r.width > maxW + 1 || r.height > maxH + 1
+      || el.scrollWidth > el.clientWidth + 1
+      || el.scrollHeight > el.clientHeight + 1;
+  };
 
-  // Recherche : agrandir puis réduire — seule la police varie.
   let guard = 50;
   while (guard-- > 0 && size < capSize) {
     setSize(size + 1);

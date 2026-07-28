@@ -88,6 +88,8 @@ class TestBuildBubbleWrap:
 class TestCssContract:
     def test_no_new_bubble_chrome(self):
         assert "background: #ffffff" in BUBBLE_FIT_CSS
+        assert "max-content" in BUBBLE_FIT_CSS
+        assert "background: transparent !important" in BUBBLE_FIT_CSS
         assert TRANSLATED_TEXT_COLOR in BUBBLE_FIT_CSS
         assert "translate(-50%" not in BUBBLE_FIT_CSS
 
@@ -105,11 +107,12 @@ class TestDetectPolygonOnEllipse:
         from services.rendering import detect_bubble_polygon
 
         img = np.full((400, 400, 3), 40, dtype=np.uint8)
-        cv2.ellipse(img, (200, 200), (90, 60), 0, 0, 360, (255, 255, 255), -1)
-        seed = BoundingBox(x_min=180, y_min=185, x_max=220, y_max=215)
+        cv2.ellipse(img, (200, 200), (70, 45), 0, 0, 360, (255, 255, 255), -1)
+        # Seed proche de la vraie bulle (évite de confondre avec un panneau).
+        seed = BoundingBox(x_min=150, y_min=170, x_max=250, y_max=230)
         poly = detect_bubble_polygon(img, seed)
         assert poly is not None
         assert len(poly) >= 3
         bb = polygon_bbox(poly)
-        assert bb.x_max - bb.x_min >= 100
-        assert bb.y_max - bb.y_min >= 70
+        assert bb.x_max - bb.x_min >= 80
+        assert bb.y_max - bb.y_min >= 50

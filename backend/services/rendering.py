@@ -250,7 +250,7 @@ def detect_bubble_region(
 
     n, _, stats, _ = cv2.connectedComponentsWithStats(white)
     orig_area = max(1, bw * bh)
-    max_bubble_area = min(0.12 * w * h, max(orig_area * 12, 8000))
+    max_bubble_area = min(0.10 * w * h, max(orig_area * 8, 12_000))
     for i in range(1, n):
         sx, sy, sw, sh, area = stats[i]
         if area < 120 or area > max_bubble_area:
@@ -344,8 +344,9 @@ def detect_bubble_polygon(
     cy = max(0, min(white.shape[0] - 1, (y0 + y1) // 2 - ry0))
     n, labels, stats, _ = cv2.connectedComponentsWithStats(white)
     orig_area = max(1, bw * bh)
-    # Plafond page : autorise les bulles réelles même si la bbox Cursor est minuscule.
-    max_bubble_area = min(0.18 * w * h, max(orig_area * 20, 25_000))
+    # Plafond : une bulle de dialogue occupe rarement > ~8 % de la page.
+    # Au-delà = panneau / fond (à rejeter pour ne pas blanchir le dessin).
+    max_bubble_area = min(0.10 * w * h, max(orig_area * 8, 12_000))
 
     label = int(labels[cy, cx]) if white[cy, cx] > 0 else 0
     if label > 0:
@@ -364,6 +365,14 @@ def detect_bubble_polygon(
     if label == 0:
         return None
 
+    # Rejette les composantes trop grandes vs la bbox Cursor (panneau blanc).
+    sx = stats[label, cv2.CC_STAT_LEFT]
+    sy = stats[label, cv2.CC_STAT_TOP]
+    sw = stats[label, cv2.CC_STAT_WIDTH]
+    sh = stats[label, cv2.CC_STAT_HEIGHT]
+    if sw > bw * 4.5 and sh > bh * 4.5:
+        return None
+
     mask = (labels == label).astype(np.uint8) * 255
     contours, _ = cv2.findContours(
         mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
@@ -380,6 +389,16 @@ def detect_bubble_polygon(
     points = [(int(p[0][0]) + rx0, int(p[0][1]) + ry0) for p in approx]
     if len(points) < 3:
         return None
+
+    # Le polygone doit contenir le centre Cursor (sinon mauvaise bulle).
+    seed_cx, seed_cy = (x0 + x1) // 2, (y0 + y1) // 2
+    if cv2.pointPolygonTest(np.array(points, dtype=np.int32), (seed_cx, seed_cy), False) < 0:
+        # Tolérance : centre à proximité du polygone.
+        dist = cv2.pointPolygonTest(
+            np.array(points, dtype=np.int32), (seed_cx, seed_cy), True
+        )
+        if dist < -max(8, min(bw, bh) * 0.15):
+            return None
     return points
 
 
@@ -1098,28 +1117,11 @@ def inpaint_and_render(
     output_path: Path,
     target_language: str = "fr",
 ) -> None:
-    """Efface le texte source puis superpose la traduction."""
+    """Superposition seule : scan intact + texte (fond blanc collé au texte)."""
     blocks = refine_blocks_for_render(image_path, blocks)
 
-    # Forme exacte des bulles (polygones) détectée sur l'image originale.
-    polygons: dict[int, list[tuple[int, int]]] = {}
-    base_bgr = cv2.imread(str(image_path))
-    if base_bgr is not None:
-        for block in blocks:
-            if _looks_like_sfx_text(block.originalText):
-                continue
-            poly = detect_bubble_polygon(base_bgr, block.boundingBox)
-            if poly:
-                polygons[block.id] = poly
-
-    cleaned = output_path.with_name(f".{output_path.stem}_clean.png")
-    try:
-        erase_text_regions(image_path, blocks, cleaned)
-        source = cleaned
-    except Exception:
-        source = image_path
-
-    pil = Image.open(source).convert("RGBA")
+    # Aucun effacement / inpaint : le dessin original n'est jamais modifié.
+    pil = Image.open(image_path).convert("RGBA")
     img_w, img_h = pil.size
 
     clipped_blocks = [
@@ -1153,6 +1155,8 @@ def inpaint_and_render(
         if target_language in _LATIN_TARGETS and not _has_cjk(hinted_text):
             use_vertical = False
         draw_bg = bg_hint is not False
+        # Pas de remplissage polygone (risque de masquer le dessin) :
+        # uniquement un fond blanc collé au texte.
         if use_vertical:
             _draw_bubble_overlay_vertical(
                 draw,
@@ -1160,7 +1164,7 @@ def inpaint_and_render(
                 hinted_text,
                 font_candidates,
                 draw_background=draw_bg,
-                polygon=polygons.get(block.id),
+                polygon=None,
             )
         else:
             _draw_bubble_overlay(
@@ -1169,7 +1173,7 @@ def inpaint_and_render(
                 hinted_text,
                 font_candidates,
                 draw_background=draw_bg,
-                polygon=polygons.get(block.id),
+                polygon=None,
             )
 
     composed = Image.alpha_composite(pil, overlay).convert("RGB")

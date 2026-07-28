@@ -24,7 +24,6 @@ from services.rendering import (
     _extract_render_hints,
     _looks_like_sfx_text,
     detect_bubble_polygon,
-    erase_text_regions,
     refine_blocks_for_render,
 )
 
@@ -74,9 +73,13 @@ html, body {{ overflow: hidden; }}
   align-items: center;
   justify-content: center;
   text-align: center;
+  width: max-content;
+  height: max-content;
+  max-width: 100%;
+  max-height: 100%;
   background: #ffffff !important;
   border: none !important;
-  border-radius: 0 !important;
+  border-radius: 8px;
   padding: {TEXT_PAD_CSS};
   color: {TRANSLATED_TEXT_COLOR} !important;
   font-family: "ToaManga", "Yu Gothic", "Segoe UI", sans-serif;
@@ -95,6 +98,7 @@ html, body {{ overflow: hidden; }}
 }}
 .toa-bubble--sfx {{
   background: transparent !important;
+  border-radius: 0;
   font-family: "ToaSFX", Impact, "Arial Black", sans-serif;
   font-weight: 900;
   letter-spacing: 0.02em;
@@ -366,7 +370,7 @@ def render_page_html_overlays(
     *,
     page_css: str = "",
 ) -> None:
-    """Efface l'encre dans le polygone, puis superpose le texte clipé (police seule)."""
+    """Superposition pure : scan intact + texte traduit par-dessus (aucun effacement)."""
     from PIL import Image
     import cv2
 
@@ -385,8 +389,8 @@ def render_page_html_overlays(
 
     html_path = output_path.with_suffix(".overlay.html")
     scan_asset = html_path.with_name(f"{html_path.stem}_scan.png")
-
-    erase_text_regions(scan_path, blocks, scan_asset, polygons=polygons)
+    # Ne jamais modifier le dessin : copie bit-à-bit du scan original.
+    shutil.copy2(scan_path, scan_asset)
 
     html_doc = build_overlay_html(
         scan_asset.name,
@@ -403,7 +407,7 @@ def render_page_html_overlays(
     try:
         _screenshot_html(html_path, output_path, width, height)
         logger.info(
-            "Page composée (clip polygone, %s bulles formées): %s",
+            "Page composée (superposition seule, %s bulles): %s",
             len(polygons),
             output_path.name,
         )

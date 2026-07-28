@@ -148,7 +148,10 @@ class TestSeparateOverlaps:
         assert "border-radius: 50%" in BUBBLE_FIT_CSS
         assert "rgba(255, 255, 255, 0.5)" in BUBBLE_FIT_CSS
         assert "z-index: 1000" in BUBBLE_FIT_CSS
+        assert TRANSLATED_TEXT_COLOR == "#4A3F35"
         assert TRANSLATED_TEXT_COLOR in BUBBLE_FIT_CSS
+        assert "word-break: normal" in BUBBLE_FIT_CSS
+        assert "overflow-wrap: normal" in BUBBLE_FIT_CSS
         assert "font-weight: 800" in BUBBLE_FIT_CSS
         assert "opacity: 1" in BUBBLE_FIT_CSS
         assert ".toa-bubble-wrap .toa-bubble" in BUBBLE_FIT_CSS

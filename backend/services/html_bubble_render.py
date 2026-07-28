@@ -99,7 +99,9 @@ html, body {{ overflow: hidden; }}
   font-family: "ToaManga", "Yu Gothic", "Segoe UI", sans-serif;
   font-weight: 800 !important;
   line-height: 1.25;
-  word-wrap: break-word;
+  word-break: normal;
+  overflow-wrap: normal;
+  hyphens: none;
   opacity: 1 !important;
   text-shadow: 0 0 2px #fff, 1px 0 0 #fff, -1px 0 0 #fff, 0 1px 0 #fff, 0 -1px 0 #fff;
 }}
@@ -109,6 +111,8 @@ html, body {{ overflow: hidden; }}
   background: transparent !important;
   opacity: 1 !important;
   font-weight: 800 !important;
+  word-break: normal !important;
+  overflow-wrap: normal !important;
 }}
 .toa-bubble p {{
   margin: 0;

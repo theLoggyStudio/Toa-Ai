@@ -24,8 +24,8 @@ logger = logging.getLogger(__name__)
 
 Point = tuple[int, int]
 
-TRANSLATED_TEXT_COLOR = "#111111"
-TRANSLATED_TEXT_RGB = (0x11, 0x11, 0x11)
+TRANSLATED_TEXT_COLOR = "#4A3F35"
+TRANSLATED_TEXT_RGB = (0x4A, 0x3F, 0x35)
 
 TEXT_HALO_CSS = (
     "0 0 2px #fff, 1px 0 0 #fff, -1px 0 0 #fff, 0 1px 0 #fff, 0 -1px 0 #fff"
@@ -99,8 +99,10 @@ BUBBLE_FIT_CSS = f"""
   border-radius: 0;
   padding: var(--toa-pad, {TEXT_PAD_CSS});
   white-space: normal;
-  word-break: break-word;
-  overflow-wrap: anywhere;
+  /* Jamais couper un mot : wrap aux espaces seulement ; le fit réduit la police. */
+  word-break: normal;
+  overflow-wrap: normal;
+  hyphens: none;
   color: {TRANSLATED_TEXT_COLOR} !important;
   font-weight: 800 !important;
   opacity: 1 !important;
@@ -114,6 +116,9 @@ BUBBLE_FIT_CSS = f"""
   opacity: 1 !important;
   font-weight: 800 !important;
   text-shadow: {TEXT_HALO_CSS};
+  word-break: normal !important;
+  overflow-wrap: normal !important;
+  hyphens: none !important;
 }}
 .toa-bubble-wrap .toa-bubble p {{
   background: transparent !important;
@@ -154,12 +159,27 @@ document.querySelectorAll('.toa-bubble-wrap').forEach((wrap) => {{
   if (size > capSize) size = capSize;
   const setSize = (s) => {{ size = s; el.style.fontSize = s.toFixed(1) + 'px'; }};
   const overflows = () => {{
+    // Déborde = trop grand pour la bulle → on réduit la police (jamais couper un mot).
     if (isSfx) {{
       const r = el.getBoundingClientRect();
       return r.width > maxW + 1 || r.height > maxH + 1;
     }}
-    return el.scrollWidth > el.clientWidth + 1
-      || el.scrollHeight > el.clientHeight + 1;
+    if (el.scrollWidth > el.clientWidth + 1 || el.scrollHeight > el.clientHeight + 1) {{
+      return true;
+    }}
+    // Mot trop long pour la largeur (sans césure) → forcer une police plus petite.
+    const words = (el.innerText || '').split(/\\s+/).filter(Boolean);
+    if (!words.length) return false;
+    const probe = document.createElement('span');
+    probe.style.cssText = 'position:absolute;visibility:hidden;white-space:nowrap;font:' + getComputedStyle(el).font;
+    document.body.appendChild(probe);
+    let tooWide = false;
+    for (const w of words) {{
+      probe.textContent = w;
+      if (probe.offsetWidth > maxW - 4) {{ tooWide = true; break; }}
+    }}
+    probe.remove();
+    return tooWide;
   }};
 
   setSize(size);

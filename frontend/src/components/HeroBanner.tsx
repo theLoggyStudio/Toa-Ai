@@ -2,7 +2,7 @@ import { NavLink } from 'react-router-dom';
 import banniereImg from '../assets/baniere.png';
 
 type Props = {
-  product?: 'translate' | 'eclat';
+  product?: 'translate' | 'fresco';
 };
 
 export function HeroBanner({ product = 'translate' }: Props) {
@@ -12,8 +12,8 @@ export function HeroBanner({ product = 'translate' }: Props) {
         <img
           src={banniereImg}
           alt={
-            product === 'eclat'
-              ? 'Éclat - Restauration de photos'
+            product === 'fresco'
+              ? 'Fresco - Restauration de photos'
               : 'Toa - Traduction de mangas et manhwas'
           }
           className="toa-pixel-img toa-hero-full__img"
@@ -31,12 +31,12 @@ export function HeroBanner({ product = 'translate' }: Props) {
           Traduction
         </NavLink>
         <NavLink
-          to="/eclat"
+          to="/fresco"
           className={({ isActive }) =>
             `toa-product-nav__link${isActive ? ' is-active' : ''}`
           }
         >
-          Éclat
+          Fresco
         </NavLink>
       </nav>
     </header>

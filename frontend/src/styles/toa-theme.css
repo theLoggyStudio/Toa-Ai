@@ -413,12 +413,12 @@ body:has(.modal.show) {
   text-decoration: underline;
 }
 
-.toa-eclat-price {
+.toa-fresco-price {
   background: var(--toa-taupe-dark);
   border: 2px solid var(--toa-border);
 }
 
-.toa-eclat-compare__img {
+.toa-fresco-compare__img {
   width: 100%;
   aspect-ratio: 1;
   object-fit: cover;
@@ -426,7 +426,7 @@ body:has(.modal.show) {
   background: var(--toa-taupe-dark);
 }
 
-.toa-eclat-compare__placeholder {
+.toa-fresco-compare__placeholder {
   width: 100%;
   aspect-ratio: 1;
   display: flex;

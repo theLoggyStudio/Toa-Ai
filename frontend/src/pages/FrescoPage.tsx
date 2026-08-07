@@ -16,7 +16,7 @@ import { Footer } from '../components/Footer';
 import { HeroBanner } from '../components/HeroBanner';
 import type { TranslationTask } from '../types/translation';
 
-export function EclatPage() {
+export function FrescoPage() {
   const [files, setFiles] = useState<File[]>([]);
   const [task, setTask] = useState<TranslationTask | null>(null);
   const [priceDisplayed, setPriceDisplayed] = useState(false);
@@ -274,13 +274,13 @@ export function EclatPage() {
 
   return (
     <div className="toa-page">
-      <HeroBanner product="eclat" />
+      <HeroBanner product="fresco" />
 
       <main className="container pb-4" style={{ maxWidth: 760 }}>
         <div className="card toa-card border-0">
           <div className="card-body p-4">
             <div className="d-flex align-items-center justify-content-between gap-2 mb-1">
-              <h1 className="h4 mb-0">Éclat</h1>
+              <h1 className="h4 mb-0">Fresco</h1>
               {paymentDisabled ? (
                 <span className="badge toa-badge-test">Mode test</span>
               ) : (
@@ -325,7 +325,7 @@ export function EclatPage() {
             )}
 
             {priceDisplayed && task && (
-              <div className="toa-eclat-price mt-3 p-3 rounded">
+              <div className="toa-fresco-price mt-3 p-3 rounded">
                 <div className="d-flex justify-content-between align-items-baseline">
                   <span className="fw-semibold">Estimation</span>
                   <span className="h5 mb-0">{task.amountCFA} FCFA</span>
@@ -371,7 +371,7 @@ export function EclatPage() {
             )}
 
             {(originalUrl || restoredUrl) && (
-              <div className="toa-eclat-compare mt-4">
+              <div className="toa-fresco-compare mt-4">
                 <div className="row g-3">
                   <div className="col-6">
                     <p className="small text-center mb-2 fw-semibold">Avant</p>
@@ -379,7 +379,7 @@ export function EclatPage() {
                       <img
                         src={originalUrl}
                         alt="Original"
-                        className="toa-eclat-compare__img"
+                        className="toa-fresco-compare__img"
                       />
                     ) : null}
                   </div>
@@ -389,10 +389,10 @@ export function EclatPage() {
                       <img
                         src={restoredUrl}
                         alt="Restauré"
-                        className="toa-eclat-compare__img"
+                        className="toa-fresco-compare__img"
                       />
                     ) : (
-                      <div className="toa-eclat-compare__placeholder">
+                      <div className="toa-fresco-compare__placeholder">
                         {task?.status === 'processing'
                           ? 'En cours…'
                           : 'Après paiement'}
@@ -425,7 +425,7 @@ export function EclatPage() {
         </p>
       </main>
 
-      <Footer tagline="Éclat — restauration photo" />
+      <Footer tagline="Fresco — restauration photo" />
     </div>
   );
 }

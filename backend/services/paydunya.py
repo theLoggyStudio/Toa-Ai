@@ -41,10 +41,10 @@ def _confirm_url(token: str) -> str:
 
 
 def _frontend_return_base(task: TranslationTask) -> str:
-    """URL de page front selon le produit (traduction vs Éclat)."""
+    """URL de page front selon le produit (traduction vs Fresco)."""
     origin = FRONTEND_ORIGIN.rstrip("/")
     if getattr(task, "kind", "translate") == "restore":
-        return f"{origin}/eclat"
+        return f"{origin}/fresco"
     return f"{origin}/TOA.ai"
 
 
@@ -57,7 +57,7 @@ def create_checkout_invoice(task: TranslationTask) -> tuple[str, str]:
     callback_url = f"{BACKEND_PUBLIC_URL.rstrip('/')}/api/webhooks/paydunya"
     page_base = _frontend_return_base(task)
     if task.kind == "restore":
-        description = f"Éclat - restauration photo ({task.amountCFA} FCFA)"
+        description = f"Fresco - restauration photo ({task.amountCFA} FCFA)"
     else:
         description = (
             f"Traduction Manga Toa AI - {task.billableBubblesCount} bulles"

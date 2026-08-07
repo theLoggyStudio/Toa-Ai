@@ -1,4 +1,4 @@
-"""Restauration photo Éclat (OpenCV) : contraste, denoise, saturation, netteté."""
+"""Restauration photo Fresco (OpenCV) : contraste, denoise, saturation, netteté."""
 
 from __future__ import annotations
 

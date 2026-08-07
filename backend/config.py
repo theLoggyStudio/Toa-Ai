@@ -48,7 +48,7 @@ def estimate_bubbles_for_pages(page_count: int) -> int:
     return max(1, page_count * ESTIMATED_BUBBLES_PER_PAGE)
 
 
-# Éclat — restauration photo : 250–1000 FCFA selon les mégapixels.
+# Fresco — restauration photo : 250–1000 FCFA selon les mégapixels.
 ECLAT_PRICE_MIN_CFA = int(os.getenv("ECLAT_PRICE_MIN_CFA", "250"))
 ECLAT_PRICE_MAX_CFA = int(os.getenv("ECLAT_PRICE_MAX_CFA", "1000"))
 ECLAT_MP_MIN = float(os.getenv("ECLAT_MP_MIN", "0.3"))
@@ -56,7 +56,7 @@ ECLAT_MP_MAX = float(os.getenv("ECLAT_MP_MAX", "12"))
 
 
 def amount_cfa_for_image_size(width: int, height: int) -> int:
-    """Prix Éclat linéaire selon les mégapixels, borné entre min et max FCFA."""
+    """Prix Fresco linéaire selon les mégapixels, borné entre min et max FCFA."""
     w = max(1, int(width))
     h = max(1, int(height))
     mp = (w * h) / 1_000_000.0

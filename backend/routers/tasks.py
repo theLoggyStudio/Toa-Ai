@@ -65,7 +65,7 @@ _PAYMENT_DONE_STATUSES = frozenset({"processing", "completed", "paid"})
 
 
 def _run_restore_pipeline(task_id: str) -> None:
-    """Restauration Éclat synchrone (rapide) dans un threadpool via le caller."""
+    """Restauration Fresco synchrone (rapide) dans un threadpool via le caller."""
     try:
         update_task(
             task_id,
@@ -310,7 +310,7 @@ async def start_processing(task_id: str, background_tasks: BackgroundTasks):
 
 @router.post("/restore/upload", response_model=UploadResponse)
 async def upload_restore(image: UploadFile = File(...)):
-    """Éclat : une image → estimation prix selon les mégapixels (250–1000 FCFA)."""
+    """Fresco : une image → estimation prix selon les mégapixels (250–1000 FCFA)."""
     suffix = (Path(image.filename or "photo.png").suffix or ".png").lower()
     if suffix not in {".png", ".jpg", ".jpeg"}:
         raise HTTPException(400, "Format non supporté. Utilisez PNG, JPG ou JPEG.")
@@ -372,7 +372,7 @@ async def download_restored_image(task_id: str):
     return FileResponse(
         path,
         media_type=media,
-        filename=f"eclat-{task_id[:8]}{path.suffix}",
+        filename=f"fresco-{task_id[:8]}{path.suffix}",
         headers={
             "Cache-Control": "no-store, no-cache, must-revalidate",
             "Pragma": "no-cache",
@@ -382,7 +382,7 @@ async def download_restored_image(task_id: str):
 
 @router.get("/restore/{task_id}/original")
 async def download_original_image(task_id: str):
-    """Aperçu de l'original (avant) pour la page Éclat."""
+    """Aperçu de l'original (avant) pour la page Fresco."""
     task = get_task(task_id)
     if not task or task.kind != "restore":
         raise HTTPException(404, "Tâche introuvable.")

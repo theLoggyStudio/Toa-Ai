@@ -9,12 +9,12 @@ npm run install:all
 npm start
 ```
 
-- Frontend : http://localhost:3100/TOA.ai (traduction) · http://localhost:3100/eclat (Éclat)
+- Frontend : http://localhost:3100/TOA.ai (traduction) · http://localhost:3100/fresco (Fresco)
 - Backend : http://127.0.0.1:9400
 
 Routes :
 - `/TOA.ai` — traduction manga / manhwa (PayDunya)
-- `/eclat` — **Éclat**, restauration photo (250–1000 FCFA selon les mégapixels)
+- `/fresco` — **Fresco**, restauration photo (250–1000 FCFA selon les mégapixels)
 
 Copiez `backend/.env.example` vers `backend/.env` et configurez vos clés.
 

@@ -1,4 +1,4 @@
-"""Intégration API Checkout PayDunya (sandbox + production)."""
+"""Intégration API Checkout PayDunya (sandbox + production, par produit)."""
 
 import json
 import urllib.error
@@ -7,11 +7,9 @@ import urllib.request
 from config import (
     BACKEND_PUBLIC_URL,
     FRONTEND_ORIGIN,
-    PAYDUNYA_API_URL,
     PAYDUNYA_MASTER_KEY,
-    PAYDUNYA_MODE,
-    PAYDUNYA_PRIVATE_KEY,
-    PAYDUNYA_TOKEN,
+    paydunya_credentials_for_mode,
+    paydunya_mode_for_kind,
 )
 from models import TranslationTask
 
@@ -20,21 +18,21 @@ class PayDunyaError(Exception):
     pass
 
 
-def _paydunya_headers() -> dict[str, str]:
+def _paydunya_headers(private_key: str, token: str) -> dict[str, str]:
     return {
         "Content-Type": "application/json",
         "Accept": "application/json",
         "User-Agent": "ToaAI/1.0 (PayDunya-Checkout)",
         "PAYDUNYA-MASTER-KEY": PAYDUNYA_MASTER_KEY,
-        "PAYDUNYA-PRIVATE-KEY": PAYDUNYA_PRIVATE_KEY,
-        "PAYDUNYA-TOKEN": PAYDUNYA_TOKEN,
+        "PAYDUNYA-PRIVATE-KEY": private_key,
+        "PAYDUNYA-TOKEN": token,
     }
 
 
-def _confirm_url(token: str) -> str:
+def _confirm_url(token: str, mode: str) -> str:
     base = (
         "https://app.paydunya.com/api/v1/checkout-invoice/confirm"
-        if PAYDUNYA_MODE == "production"
+        if mode == "production"
         else "https://app.paydunya.com/sandbox-api/v1/checkout-invoice/confirm"
     )
     return f"{base}/{token}"
@@ -49,14 +47,18 @@ def _frontend_return_base(task: TranslationTask) -> str:
 
 
 def create_checkout_invoice(task: TranslationTask) -> tuple[str, str]:
-    if not PAYDUNYA_MASTER_KEY or not PAYDUNYA_PRIVATE_KEY or not PAYDUNYA_TOKEN:
+    kind = getattr(task, "kind", "translate")
+    mode = paydunya_mode_for_kind(kind)
+    private_key, token_key, api_url = paydunya_credentials_for_mode(mode)
+
+    if not PAYDUNYA_MASTER_KEY or not private_key or not token_key:
         raise PayDunyaError(
             "Clés PayDunya manquantes. Configurez PAYDUNYA_* dans backend/.env."
         )
 
     callback_url = f"{BACKEND_PUBLIC_URL.rstrip('/')}/api/webhooks/paydunya"
     page_base = _frontend_return_base(task)
-    if task.kind == "restore":
+    if kind == "restore":
         description = f"Fresco - restauration photo ({task.amountCFA} FCFA)"
     else:
         description = (
@@ -69,7 +71,7 @@ def create_checkout_invoice(task: TranslationTask) -> tuple[str, str]:
             "description": description,
         },
         "store": {"name": "Toa AI"},
-        "custom_data": {"task_id": task.id, "kind": task.kind},
+        "custom_data": {"task_id": task.id, "kind": kind},
         "actions": {
             "cancel_url": f"{page_base}?task_id={task.id}&cancelled=1",
             "return_url": f"{page_base}?task_id={task.id}&paid_return=1",
@@ -79,9 +81,9 @@ def create_checkout_invoice(task: TranslationTask) -> tuple[str, str]:
 
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
-        PAYDUNYA_API_URL,
+        api_url,
         data=data,
-        headers=_paydunya_headers(),
+        headers=_paydunya_headers(private_key, token_key),
         method="POST",
     )
 
@@ -107,11 +109,13 @@ def create_checkout_invoice(task: TranslationTask) -> tuple[str, str]:
     return token, url
 
 
-def confirm_checkout_invoice(token: str) -> dict:
+def confirm_checkout_invoice(token: str, kind: str = "translate") -> dict:
     """Vérifie le statut d'une facture (après retour utilisateur ou IPN)."""
+    mode = paydunya_mode_for_kind(kind)
+    private_key, token_key, _ = paydunya_credentials_for_mode(mode)
     req = urllib.request.Request(
-        _confirm_url(token),
-        headers=_paydunya_headers(),
+        _confirm_url(token, mode),
+        headers=_paydunya_headers(private_key, token_key),
         method="GET",
     )
     try:

@@ -90,7 +90,10 @@ DISABLE_PAYMENT = os.getenv("DISABLE_PAYMENT", "false").lower() in (
     "yes",
 )
 
+# Traduction : test | production
 PAYDUNYA_MODE = os.getenv("PAYDUNYA_MODE", "test")
+# Fresco (restauration) : indépendant — défaut sandbox
+PAYDUNYA_FRESCO_MODE = os.getenv("PAYDUNYA_FRESCO_MODE", "test")
 PAYDUNYA_MASTER_KEY = os.getenv("PAYDUNYA_MASTER_KEY", "")
 
 # Noms explicites par environnement (test / production), avec fallback legacy.
@@ -119,6 +122,28 @@ else:
     PAYDUNYA_PRIVATE_KEY = PAYDUNYA_TEST_PRIVATE_KEY
     PAYDUNYA_TOKEN = PAYDUNYA_TEST_TOKEN
 
+
+def paydunya_mode_for_kind(kind: str) -> str:
+    """Mode PayDunya selon le produit (traduction vs Fresco)."""
+    if kind == "restore":
+        return PAYDUNYA_FRESCO_MODE
+    return PAYDUNYA_MODE
+
+
+def paydunya_credentials_for_mode(mode: str) -> tuple[str, str, str]:
+    """Retourne (private_key, token, create_api_url) pour le mode donné."""
+    if mode == "production":
+        return (
+            PAYDUNYA_PROD_PRIVATE_KEY,
+            PAYDUNYA_PROD_TOKEN,
+            "https://app.paydunya.com/api/v1/checkout-invoice/create",
+        )
+    return (
+        PAYDUNYA_TEST_PRIVATE_KEY,
+        PAYDUNYA_TEST_TOKEN,
+        "https://app.paydunya.com/sandbox-api/v1/checkout-invoice/create",
+    )
+
 FRONTEND_PORT = int(os.getenv("FRONTEND_PORT", "3100"))
 BACKEND_PORT = int(os.getenv("BACKEND_PORT", "9400"))
 FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", f"http://localhost:{FRONTEND_PORT}")
@@ -137,9 +162,8 @@ CURSOR_USE_CLOUD = os.getenv("CURSOR_USE_CLOUD", "true").lower() in (
 CURSOR_MAX_IMAGE_PX = int(os.getenv("CURSOR_MAX_IMAGE_PX", "1920"))
 CURSOR_PAGE_DELAY_SEC = float(os.getenv("CURSOR_PAGE_DELAY_SEC", "0.5"))
 
-PAYDUNYA_API_URL = "https://app.paydunya.com/sandbox-api/v1/checkout-invoice/create"
-if PAYDUNYA_MODE == "production":
-    PAYDUNYA_API_URL = "https://app.paydunya.com/api/v1/checkout-invoice/create"
+# URL create par défaut (traduction) — Fresco peut utiliser le sandbox à part.
+_, _, PAYDUNYA_API_URL = paydunya_credentials_for_mode(PAYDUNYA_MODE)
 
 for directory in (UPLOAD_DIR, OUTPUT_DIR):
     directory.mkdir(parents=True, exist_ok=True)

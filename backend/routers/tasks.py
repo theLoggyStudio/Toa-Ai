@@ -453,7 +453,9 @@ async def confirm_payment(task_id: str):
 
     try:
         body = await run_in_threadpool(
-            confirm_checkout_invoice, task.payduniaToken
+            confirm_checkout_invoice,
+            task.payduniaToken,
+            getattr(task, "kind", "translate"),
         )
     except PayDunyaError as exc:
         raise HTTPException(502, str(exc)) from exc
@@ -700,7 +702,11 @@ async def paydunya_webhook(
 
     # Ne jamais faire confiance au statut du payload : re-confirmer côté PayDunya.
     try:
-        body = await run_in_threadpool(confirm_checkout_invoice, token)
+        body = await run_in_threadpool(
+            confirm_checkout_invoice,
+            token,
+            getattr(task, "kind", "translate"),
+        )
     except PayDunyaError as exc:
         raise HTTPException(502, str(exc)) from exc
     if invoice_status_from_confirm(body) not in ("completed", "success"):

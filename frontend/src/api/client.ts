@@ -213,3 +213,37 @@ export function getPdfDownloadUrl(taskId: string): string {
 export function getPartialPdfDownloadUrl(taskId: string): string {
   return `${API_BASE}/api/tasks/${taskId}/pdf/partial?_=${Date.now()}`;
 }
+
+export async function uploadRestoreImage(file: File): Promise<UploadResponse> {
+  const formData = new FormData();
+  formData.append('image', file);
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), UPLOAD_TIMEOUT_MS);
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE}/api/restore/upload`, {
+      method: 'POST',
+      body: formData,
+      cache: 'no-store',
+      signal: controller.signal,
+    });
+  } catch (err) {
+    if (err instanceof Error && err.name === 'AbortError') {
+      throw new Error("L'envoi de l'image prend trop de temps.");
+    }
+    if (err instanceof TypeError) {
+      throw new Error(
+        `Backend injoignable. Lancez "npm start" ou uvicorn sur ${API_BASE}`,
+      );
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+  return handleResponse<UploadResponse>(response);
+}
+
+export function getRestoredImageUrl(taskId: string): string {
+  return `${API_BASE}/api/restore/${taskId}/image?_=${Date.now()}`;
+}

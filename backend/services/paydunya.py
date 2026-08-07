@@ -40,6 +40,14 @@ def _confirm_url(token: str) -> str:
     return f"{base}/{token}"
 
 
+def _frontend_return_base(task: TranslationTask) -> str:
+    """URL de page front selon le produit (traduction vs Éclat)."""
+    origin = FRONTEND_ORIGIN.rstrip("/")
+    if getattr(task, "kind", "translate") == "restore":
+        return f"{origin}/eclat"
+    return f"{origin}/TOA.ai"
+
+
 def create_checkout_invoice(task: TranslationTask) -> tuple[str, str]:
     if not PAYDUNYA_MASTER_KEY or not PAYDUNYA_PRIVATE_KEY or not PAYDUNYA_TOKEN:
         raise PayDunyaError(
@@ -47,18 +55,24 @@ def create_checkout_invoice(task: TranslationTask) -> tuple[str, str]:
         )
 
     callback_url = f"{BACKEND_PUBLIC_URL.rstrip('/')}/api/webhooks/paydunya"
+    page_base = _frontend_return_base(task)
+    if task.kind == "restore":
+        description = f"Éclat - restauration photo ({task.amountCFA} FCFA)"
+    else:
+        description = (
+            f"Traduction Manga Toa AI - {task.billableBubblesCount} bulles"
+        )
+
     payload = {
         "invoice": {
             "total_amount": task.amountCFA,
-            "description": (
-                f"Traduction Manga Toa AI - {task.billableBubblesCount} bulles"
-            ),
+            "description": description,
         },
         "store": {"name": "Toa AI"},
-        "custom_data": {"task_id": task.id},
+        "custom_data": {"task_id": task.id, "kind": task.kind},
         "actions": {
-            "cancel_url": f"{FRONTEND_ORIGIN}?task_id={task.id}&cancelled=1",
-            "return_url": f"{FRONTEND_ORIGIN}?task_id={task.id}&paid_return=1",
+            "cancel_url": f"{page_base}?task_id={task.id}&cancelled=1",
+            "return_url": f"{page_base}?task_id={task.id}&paid_return=1",
             "callback_url": callback_url,
         },
     }

@@ -47,6 +47,25 @@ ESTIMATED_BUBBLES_PER_PAGE = max(1, int(os.getenv("ESTIMATED_BUBBLES_PER_PAGE", 
 def estimate_bubbles_for_pages(page_count: int) -> int:
     return max(1, page_count * ESTIMATED_BUBBLES_PER_PAGE)
 
+
+# Éclat — restauration photo : 250–1000 FCFA selon les mégapixels.
+ECLAT_PRICE_MIN_CFA = int(os.getenv("ECLAT_PRICE_MIN_CFA", "250"))
+ECLAT_PRICE_MAX_CFA = int(os.getenv("ECLAT_PRICE_MAX_CFA", "1000"))
+ECLAT_MP_MIN = float(os.getenv("ECLAT_MP_MIN", "0.3"))
+ECLAT_MP_MAX = float(os.getenv("ECLAT_MP_MAX", "12"))
+
+
+def amount_cfa_for_image_size(width: int, height: int) -> int:
+    """Prix Éclat linéaire selon les mégapixels, borné entre min et max FCFA."""
+    w = max(1, int(width))
+    h = max(1, int(height))
+    mp = (w * h) / 1_000_000.0
+    span_mp = max(1e-6, ECLAT_MP_MAX - ECLAT_MP_MIN)
+    t = (mp - ECLAT_MP_MIN) / span_mp
+    t = max(0.0, min(1.0, t))
+    amount = round(ECLAT_PRICE_MIN_CFA + t * (ECLAT_PRICE_MAX_CFA - ECLAT_PRICE_MIN_CFA))
+    return max(ECLAT_PRICE_MIN_CFA, min(ECLAT_PRICE_MAX_CFA, amount))
+
 # Traitement par lots (pages max par passe Cursor + PDF partiel).
 BATCH_PAGE_SIZE = int(os.getenv("BATCH_PAGE_SIZE", "5"))
 # Pages traduites/rendues en parallèle dans un lot (appels Cursor = surtout de l'attente réseau).

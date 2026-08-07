@@ -7,6 +7,7 @@ from languages import SourceLanguage, TargetLanguage
 TaskStatus = Literal[
     "pending_payment", "paid", "processing", "completed", "failed"
 ]
+TaskKind = Literal["translate", "restore"]
 
 
 class BoundingBox(BaseModel):
@@ -33,6 +34,10 @@ class TranslationTask(BaseModel):
     amountCFA: int
     billableBubblesCount: int = 0
     includeToa: bool = True
+    kind: TaskKind = "translate"
+    imageWidth: Optional[int] = None
+    imageHeight: Optional[int] = None
+    restoredImageUrl: Optional[str] = None
     # exclude=True : jamais sérialisé vers le client (sert à vérifier le webhook).
     payduniaToken: Optional[str] = Field(default=None, exclude=True)
     pdfUrl: Optional[str] = None
@@ -46,6 +51,8 @@ class AppConfigResponse(BaseModel):
     paymentDisabled: bool
     priceBaseCFA: int
     pricePerBubbleCFA: int
+    eclatPriceMinCFA: int = 250
+    eclatPriceMaxCFA: int = 1000
 
 
 class UploadResponse(BaseModel):

@@ -18,11 +18,13 @@ from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 
 from config import (
     DISABLE_PAYMENT,
-    FRONTEND_ORIGIN,
+    ECLAT_PRICE_MAX_CFA,
+    ECLAT_PRICE_MIN_CFA,
     OUTPUT_DIR,
     PRICE_BASE_CFA,
     PRICE_PER_BUBBLE_CFA,
     amount_cfa_for_bubbles,
+    amount_cfa_for_image_size,
     estimate_bubbles_for_pages,
 )
 from languages import SUPPORTED_TARGET_CODES
@@ -46,9 +48,11 @@ from services.paydunya import (
     invoice_status_from_confirm,
     verify_webhook_token,
 )
+from services.photo_restore import image_dimensions, restore_photo
 from services.storage import (
     create_task,
     get_output_pdf,
+    get_restored_image_path,
     get_task,
     get_upload_dir,
     update_task,
@@ -58,6 +62,52 @@ from services.worker import schedule_pipeline
 router = APIRouter(prefix="/api", tags=["tasks"])
 
 _PAYMENT_DONE_STATUSES = frozenset({"processing", "completed", "paid"})
+
+
+def _run_restore_pipeline(task_id: str) -> None:
+    """Restauration Éclat synchrone (rapide) dans un threadpool via le caller."""
+    try:
+        update_task(
+            task_id,
+            status="processing",
+            progressPercent=20,
+            progressMessage="Restauration en cours…",
+            errorMessage=None,
+        )
+        upload_dir = get_upload_dir(task_id)
+        sources = sorted(
+            [
+                p
+                for p in upload_dir.iterdir()
+                if p.is_file() and p.suffix.lower() in {".png", ".jpg", ".jpeg"}
+            ]
+        )
+        if not sources:
+            update_task(
+                task_id,
+                status="failed",
+                progressPercent=0,
+                errorMessage="Image source introuvable.",
+            )
+            return
+        src = sources[0]
+        out = OUTPUT_DIR / f"{task_id}_restored.png"
+        restore_photo(src, out)
+        update_task(
+            task_id,
+            status="completed",
+            progressPercent=100,
+            progressMessage="Terminé",
+            restoredImageUrl=f"/api/restore/{task_id}/image",
+            errorMessage=None,
+        )
+    except Exception as exc:  # noqa: BLE001 — surface erreur à l'utilisateur
+        update_task(
+            task_id,
+            status="failed",
+            progressPercent=0,
+            errorMessage=str(exc) or "Échec de la restauration.",
+        )
 
 
 def _start_pipeline_after_payment(task_id: str, token: str | None = None) -> bool:
@@ -76,7 +126,14 @@ def _start_pipeline_after_payment(task_id: str, token: str | None = None) -> boo
     if token:
         updates["payduniaToken"] = token
     update_task(task_id, **updates)
-    schedule_pipeline(task_id, task.sourceLanguage, task.targetLanguage)
+    if task.kind == "restore":
+        import threading
+
+        threading.Thread(
+            target=_run_restore_pipeline, args=(task_id,), daemon=True
+        ).start()
+    else:
+        schedule_pipeline(task_id, task.sourceLanguage, task.targetLanguage)
     return True
 
 
@@ -124,6 +181,8 @@ async def app_config():
         paymentDisabled=DISABLE_PAYMENT,
         priceBaseCFA=PRICE_BASE_CFA,
         pricePerBubbleCFA=PRICE_PER_BUBBLE_CFA,
+        eclatPriceMinCFA=ECLAT_PRICE_MIN_CFA,
+        eclatPriceMaxCFA=ECLAT_PRICE_MAX_CFA,
     )
 
 
@@ -242,16 +301,104 @@ async def start_processing(task_id: str, background_tasks: BackgroundTasks):
     if task.status != "pending_payment":
         raise HTTPException(400, "Cette tâche ne peut pas être démarrée.")
 
-    update_task(
-        task_id,
-        status="processing",
-        progressPercent=5,
-        progressMessage="Démarrage…",
-        errorMessage=None,
-    )
-    schedule_pipeline(task_id, task.sourceLanguage, task.targetLanguage)
+    started = _start_pipeline_after_payment(task_id)
+    if not started:
+        raise HTTPException(400, "Cette tâche ne peut pas être démarrée.")
     updated = get_task(task_id)
     return StartProcessingResponse(task=updated)  # type: ignore[arg-type]
+
+
+@router.post("/restore/upload", response_model=UploadResponse)
+async def upload_restore(image: UploadFile = File(...)):
+    """Éclat : une image → estimation prix selon les mégapixels (250–1000 FCFA)."""
+    suffix = (Path(image.filename or "photo.png").suffix or ".png").lower()
+    if suffix not in {".png", ".jpg", ".jpeg"}:
+        raise HTTPException(400, "Format non supporté. Utilisez PNG, JPG ou JPEG.")
+
+    data = await image.read()
+    if len(data) > MAX_UPLOAD_FILE_BYTES:
+        raise HTTPException(
+            400,
+            f"Image trop lourde. Maximum {MAX_UPLOAD_FILE_BYTES // (1024 * 1024)} Mo.",
+        )
+    if not _is_real_image(data):
+        raise HTTPException(400, "Le contenu n'est pas une image PNG ou JPEG.")
+
+    task = create_task(
+        1,
+        "auto",
+        "fr",
+        amount_cfa=0,
+        billable_bubbles_count=0,
+        include_toa=False,
+        kind="restore",
+    )
+    upload_dir = get_upload_dir(task.id)
+    _clear_upload_dir(upload_dir)
+    dest = upload_dir / f"raw_0000{suffix}"
+    dest.write_bytes(data)
+
+    try:
+        width, height = image_dimensions(dest)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    amount = amount_cfa_for_image_size(width, height)
+    update_task(
+        task.id,
+        originalImagesCount=1,
+        amountCFA=amount,
+        imageWidth=width,
+        imageHeight=height,
+        kind="restore",
+    )
+    task = get_task(task.id) or task
+    return UploadResponse(
+        task=task,
+        checkoutReady=not DISABLE_PAYMENT,
+        paymentDisabled=DISABLE_PAYMENT,
+    )
+
+
+@router.get("/restore/{task_id}/image")
+async def download_restored_image(task_id: str):
+    task = get_task(task_id)
+    if not task or task.kind != "restore" or task.status != "completed":
+        raise HTTPException(404, "Image restaurée non disponible.")
+    path = get_restored_image_path(task_id)
+    if not path:
+        raise HTTPException(404, "Fichier restauré introuvable.")
+    media = "image/png" if path.suffix.lower() == ".png" else "image/jpeg"
+    return FileResponse(
+        path,
+        media_type=media,
+        filename=f"eclat-{task_id[:8]}{path.suffix}",
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate",
+            "Pragma": "no-cache",
+        },
+    )
+
+
+@router.get("/restore/{task_id}/original")
+async def download_original_image(task_id: str):
+    """Aperçu de l'original (avant) pour la page Éclat."""
+    task = get_task(task_id)
+    if not task or task.kind != "restore":
+        raise HTTPException(404, "Tâche introuvable.")
+    upload_dir = get_upload_dir(task_id)
+    sources = sorted(
+        [
+            p
+            for p in upload_dir.iterdir()
+            if p.is_file() and p.suffix.lower() in {".png", ".jpg", ".jpeg"}
+        ]
+    )
+    if not sources:
+        raise HTTPException(404, "Image originale introuvable.")
+    src = sources[0]
+    media = "image/png" if src.suffix.lower() == ".png" else "image/jpeg"
+    return FileResponse(src, media_type=media, filename=src.name)
 
 
 @router.post("/tasks/{task_id}/checkout", response_model=CheckoutResponse)
@@ -379,6 +526,36 @@ async def retry_task(task_id: str):
         raise HTTPException(404, "Tâche introuvable.")
     if task.status != "failed":
         raise HTTPException(400, "Seule une tâche échouée peut être relancée.")
+
+    if task.kind == "restore":
+        upload_dir = get_upload_dir(task_id)
+        sources = [
+            p
+            for p in upload_dir.iterdir()
+            if p.is_file() and p.suffix.lower() in {".png", ".jpg", ".jpeg"}
+        ]
+        if not sources:
+            raise HTTPException(
+                410,
+                "L'image source n'est plus disponible. Relancez une nouvelle restauration.",
+            )
+        update_task(
+            task_id,
+            status="processing",
+            progressPercent=2,
+            progressMessage="Reprise de la restauration…",
+            errorMessage=None,
+        )
+        import threading
+
+        threading.Thread(
+            target=_run_restore_pipeline, args=(task_id,), daemon=True
+        ).start()
+        updated = get_task(task_id)
+        return StartProcessingResponse(
+            task=updated,  # type: ignore[arg-type]
+            message="Reprise démarrée",
+        )
 
     from services.scan_ingest import list_page_images
 

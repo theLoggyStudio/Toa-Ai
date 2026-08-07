@@ -12,6 +12,8 @@ export type TaskStatus =
   | 'completed'
   | 'failed';
 
+export type TaskKind = 'translate' | 'restore';
+
 export interface TranslationTask {
   id: string;
   originalImagesCount: number;
@@ -21,6 +23,10 @@ export interface TranslationTask {
   status: TaskStatus;
   amountCFA: number;
   includeToa?: boolean;
+  kind?: TaskKind;
+  imageWidth?: number;
+  imageHeight?: number;
+  restoredImageUrl?: string;
   pdfUrl?: string;
   partialPdfUrl?: string;
   progressPercent?: number;
@@ -44,6 +50,8 @@ export interface AppConfig {
   paymentDisabled: boolean;
   priceBaseCFA: number;
   pricePerBubbleCFA: number;
+  eclatPriceMinCFA?: number;
+  eclatPriceMaxCFA?: number;
 }
 
 export interface UploadResponse {

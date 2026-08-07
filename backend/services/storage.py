@@ -31,6 +31,29 @@ def _save_tasks(tasks: dict[str, dict]) -> None:
         os.replace(tmp, TASKS_FILE)
 
 
+def _task_from_raw(raw: dict) -> TranslationTask:
+    return TranslationTask(
+        id=raw["id"],
+        originalImagesCount=raw["originalImagesCount"],
+        sourceLanguage=raw["sourceLanguage"],
+        targetLanguage=raw["targetLanguage"],
+        status=raw["status"],
+        amountCFA=raw["amountCFA"],
+        billableBubblesCount=int(raw.get("billableBubblesCount", 0)),
+        includeToa=bool(raw.get("includeToa", True)),
+        kind=raw.get("kind") or "translate",
+        imageWidth=raw.get("imageWidth"),
+        imageHeight=raw.get("imageHeight"),
+        restoredImageUrl=raw.get("restoredImageUrl"),
+        payduniaToken=raw.get("payduniaToken"),
+        pdfUrl=raw.get("pdfUrl"),
+        partialPdfUrl=raw.get("partialPdfUrl"),
+        progressPercent=int(raw.get("progressPercent", 0)),
+        progressMessage=raw.get("progressMessage"),
+        errorMessage=raw.get("errorMessage"),
+    )
+
+
 def create_task(
     image_count: int,
     source_language: str,
@@ -38,6 +61,9 @@ def create_task(
     amount_cfa: int,
     billable_bubbles_count: int = 0,
     include_toa: bool = True,
+    kind: str = "translate",
+    image_width: int | None = None,
+    image_height: int | None = None,
 ) -> TranslationTask:
     task_id = str(uuid.uuid4())
     task = TranslationTask(
@@ -49,6 +75,9 @@ def create_task(
         amountCFA=amount_cfa,
         billableBubblesCount=billable_bubbles_count,
         includeToa=include_toa,
+        kind=kind,  # type: ignore[arg-type]
+        imageWidth=image_width,
+        imageHeight=image_height,
     )
     with _TASKS_LOCK:
         tasks = _load_tasks()
@@ -64,22 +93,7 @@ def get_task(task_id: str) -> Optional[TranslationTask]:
     raw = tasks.get(task_id)
     if not raw:
         return None
-    return TranslationTask(
-        id=raw["id"],
-        originalImagesCount=raw["originalImagesCount"],
-        sourceLanguage=raw["sourceLanguage"],
-        targetLanguage=raw["targetLanguage"],
-        status=raw["status"],
-        amountCFA=raw["amountCFA"],
-        billableBubblesCount=int(raw.get("billableBubblesCount", 0)),
-        includeToa=bool(raw.get("includeToa", True)),
-        payduniaToken=raw.get("payduniaToken"),
-        pdfUrl=raw.get("pdfUrl"),
-        partialPdfUrl=raw.get("partialPdfUrl"),
-        progressPercent=int(raw.get("progressPercent", 0)),
-        progressMessage=raw.get("progressMessage"),
-        errorMessage=raw.get("errorMessage"),
-    )
+    return _task_from_raw(raw)
 
 
 def update_task(task_id: str, **fields: object) -> Optional[TranslationTask]:
@@ -99,6 +113,14 @@ def get_upload_dir(task_id: str) -> Path:
 def get_output_pdf(task_id: str) -> Optional[Path]:
     pdf = OUTPUT_DIR / f"{task_id}.pdf"
     return pdf if pdf.exists() else None
+
+
+def get_restored_image_path(task_id: str) -> Optional[Path]:
+    for name in (f"{task_id}_restored.png", f"{task_id}_restored.jpg"):
+        path = OUTPUT_DIR / name
+        if path.exists():
+            return path
+    return None
 
 
 def recover_interrupted_tasks() -> int:

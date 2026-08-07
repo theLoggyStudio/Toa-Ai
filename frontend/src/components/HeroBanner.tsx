@@ -1,18 +1,25 @@
 import { NavLink } from 'react-router-dom';
 import banniereImg from '../assets/baniere.png';
+import banniereFrescoImg from '../assets/baniere-fresco.png';
 
 type Props = {
   product?: 'translate' | 'fresco';
 };
 
 export function HeroBanner({ product = 'translate' }: Props) {
+  const isFresco = product === 'fresco';
+  const bannerSrc = isFresco ? banniereFrescoImg : banniereImg;
+
   return (
-    <header className="toa-hero-full" role="banner">
+    <header
+      className={`toa-hero-full${isFresco ? ' toa-hero-full--fresco' : ''}`}
+      role="banner"
+    >
       <div className="toa-hero-full__img-wrap">
         <img
-          src={banniereImg}
+          src={bannerSrc}
           alt={
-            product === 'fresco'
+            isFresco
               ? 'Fresco - Restauration de photos'
               : 'Toa - Traduction de mangas et manhwas'
           }

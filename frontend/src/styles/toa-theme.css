@@ -51,6 +51,114 @@ body {
   min-height: 90vh;
   display: flex;
   flex-direction: column;
+  animation: toa-page-enter 0.55s ease both;
+}
+
+@keyframes toa-page-enter {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* Transition route : fondu couleurs (chaud ↔ bleu nuit). */
+.toa-route-fade {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.toa-route-fade__wash,
+.toa-route-fade__veil {
+  position: absolute;
+  inset: 0;
+}
+
+.toa-route-fade--warm .toa-route-fade__wash {
+  background: linear-gradient(
+    125deg,
+    #2a241c 0%,
+    #54463a 28%,
+    #d2c5b8 62%,
+    #e8b4b8 100%
+  );
+}
+
+.toa-route-fade--night .toa-route-fade__wash {
+  background: linear-gradient(
+    125deg,
+    #050b14 0%,
+    #0a1628 30%,
+    #1a3a5c 65%,
+    #3d6a9e 100%
+  );
+}
+
+.toa-route-fade--warm .toa-route-fade__veil {
+  background: radial-gradient(
+    ellipse at 30% 40%,
+    rgba(242, 235, 225, 0.35) 0%,
+    transparent 55%
+  );
+}
+
+.toa-route-fade--night .toa-route-fade__veil {
+  background: radial-gradient(
+    ellipse at 70% 35%,
+    rgba(160, 200, 255, 0.22) 0%,
+    transparent 50%
+  );
+}
+
+.toa-route-fade {
+  animation: toa-route-wash 0.78s ease forwards;
+}
+
+.toa-route-fade__wash {
+  animation: toa-route-wash-shift 0.78s ease both;
+}
+
+@keyframes toa-route-wash {
+  0% {
+    opacity: 0;
+  }
+  28% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes toa-route-wash-shift {
+  0% {
+    transform: scale(1.04);
+    filter: saturate(0.85);
+  }
+  40% {
+    transform: scale(1);
+    filter: saturate(1);
+  }
+  100% {
+    transform: scale(1.02);
+    filter: saturate(1.05);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .toa-page {
+    animation: none;
+  }
+
+  .toa-route-fade,
+  .toa-route-fade__wash {
+    animation: none;
+    opacity: 0;
+  }
 }
 
 body:has(.modal.show) {
@@ -152,6 +260,41 @@ body:has(.modal.show) {
   mask-composite: add;
   -webkit-mask-composite: source-over;
   opacity: 0.9;
+}
+
+/* Fresco : fondu dither en bleu nuit pour coller à la bannière. */
+.toa-hero-full--fresco {
+  --toa-fresco-night: #0a1628;
+}
+
+.toa-hero-full--fresco .toa-hero-full__dither--bottom {
+  background-color: var(--toa-fresco-night);
+  background-image:
+    repeating-linear-gradient(
+      0deg,
+      var(--toa-fresco-night) 0,
+      var(--toa-fresco-night) 8px,
+      transparent 8px,
+      transparent 16px
+    ),
+    repeating-linear-gradient(
+      90deg,
+      var(--toa-fresco-night) 0,
+      var(--toa-fresco-night) 8px,
+      transparent 8px,
+      transparent 16px
+    );
+}
+
+.toa-hero-full--fresco .toa-hero-full__dither--sides {
+  background-image:
+    repeating-linear-gradient(
+      90deg,
+      var(--toa-fresco-night) 0,
+      var(--toa-fresco-night) 8px,
+      transparent 8px,
+      transparent 16px
+    );
 }
 
 .toa-footer-bar {

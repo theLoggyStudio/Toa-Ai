@@ -293,6 +293,7 @@ export function FrescoPage() {
             </p>
 
             <FileUploadZone
+              product="fresco"
               files={files}
               onFilesChange={handleFilesChange}
               disabled={

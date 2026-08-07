@@ -1,18 +1,23 @@
 import { useCallback } from 'react';
 import { useDropzone } from 'react-dropzone';
 import iconImg from '../assets/icon.png';
+import iconFrescoImg from '../assets/icon-fresco.png';
 
 interface FileUploadZoneProps {
   files: File[];
   onFilesChange: (files: File[]) => void;
   disabled?: boolean;
+  /** Icône dropzone : traduction (défaut) ou Fresco bleu nuit. */
+  product?: 'translate' | 'fresco';
 }
 
 export function FileUploadZone({
   files,
   onFilesChange,
   disabled = false,
+  product = 'translate',
 }: FileUploadZoneProps) {
+  const dropIcon = product === 'fresco' ? iconFrescoImg : iconImg;
   const onDrop = useCallback(
     (accepted: File[]) => {
       const merged = [...files, ...accepted];
@@ -51,7 +56,7 @@ export function FileUploadZone({
       >
         <input {...getInputProps()} />
         <img
-          src={iconImg}
+          src={dropIcon}
           alt=""
           className="toa-pixel-img toa-dropzone-icon mb-3"
         />

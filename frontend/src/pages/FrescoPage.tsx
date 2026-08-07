@@ -9,12 +9,35 @@ import {
   resetServerSession,
   startProcessing,
   subscribeTaskEvents,
+  updateRestoreOptions,
   uploadRestoreImage,
 } from '../api/client';
 import { FileUploadZone } from '../components/FileUploadZone';
 import { Footer } from '../components/Footer';
 import { HeroBanner } from '../components/HeroBanner';
-import type { TranslationTask } from '../types/translation';
+import type { RestoreOption, TranslationTask } from '../types/translation';
+
+const FRESCO_OPTION_DEFS: {
+  id: RestoreOption;
+  label: string;
+  hint: string;
+}[] = [
+  {
+    id: 'tears',
+    label: 'Corriger l’image & déchirures',
+    hint: 'Répare rayures, plis et défauts',
+  },
+  {
+    id: 'color',
+    label: 'Ajouter / restaurer les couleurs',
+    hint: 'Ravive ou colorise la photo',
+  },
+  {
+    id: 'hd',
+    label: 'Rendre la photo en HD',
+    hint: 'Agrandit et affine les détails',
+  },
+];
 
 export function FrescoPage() {
   const [files, setFiles] = useState<File[]>([]);
@@ -23,8 +46,10 @@ export function FrescoPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [paymentDisabled, setPaymentDisabled] = useState(false);
-  const [priceMin, setPriceMin] = useState(250);
-  const [priceMax, setPriceMax] = useState(1000);
+  const [optionPrice, setOptionPrice] = useState(250);
+  const [selectedOptions, setSelectedOptions] = useState<RestoreOption[]>([
+    'tears',
+  ]);
   const [localPreview, setLocalPreview] = useState<string | null>(null);
 
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -94,6 +119,7 @@ export function FrescoPage() {
     setPriceDisplayed(false);
     setError(null);
     setLocalPreview(null);
+    setSelectedOptions(['tears']);
     window.history.replaceState({}, '', window.location.pathname);
     try {
       await resetServerSession();
@@ -101,6 +127,39 @@ export function FrescoPage() {
       /* backend peut être arrêté */
     }
   }, [stopPolling]);
+
+  const estimatedTotal = selectedOptions.length * optionPrice;
+
+  const toggleOption = useCallback(
+    async (id: RestoreOption) => {
+      setSelectedOptions((prev) => {
+        const next = prev.includes(id)
+          ? prev.filter((o) => o !== id)
+          : [...prev, id];
+        // Au moins une option (déchirures par défaut)
+        return next.length === 0 ? ['tears'] : next;
+      });
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (!task || task.status !== 'pending_payment' || !priceDisplayed) return;
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      updateRestoreOptions(task.id, selectedOptions)
+        .then(({ task: updated }) => {
+          if (!cancelled) setTask(updated);
+        })
+        .catch(() => {
+          /* ignore sync temporaire */
+        });
+    }, 250);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [selectedOptions, task?.id, task?.status, priceDisplayed]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -111,8 +170,7 @@ export function FrescoPage() {
     getAppConfig()
       .then((cfg) => {
         setPaymentDisabled(cfg.paymentDisabled);
-        setPriceMin(cfg.eclatPriceMinCFA ?? 250);
-        setPriceMax(cfg.eclatPriceMaxCFA ?? 1000);
+        setOptionPrice(cfg.frescoOptionPriceCFA ?? 250);
       })
       .catch(() => {
         setPaymentDisabled(false);
@@ -123,6 +181,9 @@ export function FrescoPage() {
       getTask(returnTaskId)
         .then((t) => {
           setTask(t);
+          if (t.restoreOptions?.length) {
+            setSelectedOptions(t.restoreOptions);
+          }
           setPriceDisplayed(true);
         })
         .catch(() => {
@@ -134,6 +195,9 @@ export function FrescoPage() {
       confirmPayment(returnTaskId)
         .then(({ task: confirmed, paymentPending }) => {
           setTask(confirmed);
+          if (confirmed.restoreOptions?.length) {
+            setSelectedOptions(confirmed.restoreOptions);
+          }
           setPriceDisplayed(true);
           if (paymentPending) {
             setError(
@@ -203,8 +267,11 @@ export function FrescoPage() {
     try {
       await resetServerSession();
       const { task: newTask, paymentDisabled: noPayment } =
-        await uploadRestoreImage(files[0]);
+        await uploadRestoreImage(files[0], selectedOptions);
       setTask(newTask);
+      if (newTask.restoreOptions?.length) {
+        setSelectedOptions(newTask.restoreOptions);
+      }
       setPaymentDisabled(noPayment);
       setPriceDisplayed(true);
     } catch (err) {
@@ -288,8 +355,8 @@ export function FrescoPage() {
               )}
             </div>
             <p className="toa-text-muted small mb-4">
-              Déposez une photo abîmée : couleurs, contraste et netteté sont
-              restaurés. Tarif selon la taille ({priceMin}–{priceMax} FCFA).
+              Choisissez les améliorations (250 FCFA chacune). Par défaut :
+              correction de l’image et des déchirures.
             </p>
 
             <FileUploadZone
@@ -302,6 +369,55 @@ export function FrescoPage() {
                 task?.status === 'paid'
               }
             />
+
+            <fieldset
+              className="toa-fresco-options mt-3"
+              disabled={
+                loading ||
+                task?.status === 'processing' ||
+                task?.status === 'paid' ||
+                task?.status === 'completed'
+              }
+            >
+              <legend className="toa-fresco-options__legend">
+                Améliorations — {optionPrice} FCFA / choix
+              </legend>
+              {FRESCO_OPTION_DEFS.map((opt) => {
+                const checked = selectedOptions.includes(opt.id);
+                return (
+                  <label
+                    key={opt.id}
+                    className={`toa-fresco-option${checked ? ' is-checked' : ''}`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => {
+                        void toggleOption(opt.id);
+                      }}
+                    />
+                    <span className="toa-fresco-option__body">
+                      <span className="toa-fresco-option__label">
+                        {opt.label}
+                      </span>
+                      <span className="toa-fresco-option__hint">{opt.hint}</span>
+                    </span>
+                    <span className="toa-fresco-option__price">
+                      {optionPrice} FCFA
+                    </span>
+                  </label>
+                );
+              })}
+              <div className="toa-fresco-options__total">
+                <span>Total</span>
+                <strong>
+                  {priceDisplayed && task
+                    ? task.amountCFA
+                    : estimatedTotal}{' '}
+                  FCFA
+                </strong>
+              </div>
+            </fieldset>
 
             {task && (
               <button
@@ -328,15 +444,16 @@ export function FrescoPage() {
             {priceDisplayed && task && (
               <div className="toa-fresco-price mt-3 p-3 rounded">
                 <div className="d-flex justify-content-between align-items-baseline">
-                  <span className="fw-semibold">Estimation</span>
+                  <span className="fw-semibold">À payer</span>
                   <span className="h5 mb-0">{task.amountCFA} FCFA</span>
                 </div>
-                {megapixels != null && (
-                  <p className="small toa-text-muted mb-0 mt-1">
-                    {task.imageWidth}×{task.imageHeight} px (
-                    {megapixels.toFixed(2)} MP)
-                  </p>
-                )}
+                <p className="small toa-text-muted mb-0 mt-1">
+                  {selectedOptions.length} option
+                  {selectedOptions.length > 1 ? 's' : ''} × {optionPrice} FCFA
+                  {megapixels != null
+                    ? ` · ${task.imageWidth}×${task.imageHeight} px`
+                    : ''}
+                </p>
                 <p className="small text-muted mb-0 mt-1">
                   Tâche #{task.id.slice(0, 8)}
                 </p>
@@ -422,7 +539,7 @@ export function FrescoPage() {
         </div>
 
         <p className="text-center toa-meta small mt-4 mb-0">
-          {priceMin}–{priceMax} FCFA selon la taille (mégapixels)
+          {optionPrice} FCFA par amélioration (max {optionPrice * 3} FCFA)
         </p>
       </main>
 

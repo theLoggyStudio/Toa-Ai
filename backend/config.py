@@ -48,23 +48,38 @@ def estimate_bubbles_for_pages(page_count: int) -> int:
     return max(1, page_count * ESTIMATED_BUBBLES_PER_PAGE)
 
 
-# Fresco — restauration photo : 250–1000 FCFA selon les mégapixels.
-ECLAT_PRICE_MIN_CFA = int(os.getenv("ECLAT_PRICE_MIN_CFA", "250"))
-ECLAT_PRICE_MAX_CFA = int(os.getenv("ECLAT_PRICE_MAX_CFA", "1000"))
-ECLAT_MP_MIN = float(os.getenv("ECLAT_MP_MIN", "0.3"))
-ECLAT_MP_MAX = float(os.getenv("ECLAT_MP_MAX", "12"))
+# Fresco — options à prix unitaire (250 FCFA chacune).
+FRESCO_OPTION_PRICE_CFA = int(os.getenv("FRESCO_OPTION_PRICE_CFA", "250"))
+FRESCO_OPTIONS = ("tears", "color", "hd")
+FRESCO_DEFAULT_OPTIONS = ("tears",)
+# Alias legacy (UI / config) : min = 1 option, max = 3 options.
+ECLAT_PRICE_MIN_CFA = FRESCO_OPTION_PRICE_CFA
+ECLAT_PRICE_MAX_CFA = FRESCO_OPTION_PRICE_CFA * len(FRESCO_OPTIONS)
+
+
+def normalize_restore_options(options: list[str] | None) -> list[str]:
+    """Filtre et ordonne les options Fresco ; défaut = correction / déchirures."""
+    allowed = set(FRESCO_OPTIONS)
+    selected: list[str] = []
+    for raw in options or []:
+        key = str(raw).strip().lower()
+        if key in allowed and key not in selected:
+            selected.append(key)
+    if not selected:
+        return list(FRESCO_DEFAULT_OPTIONS)
+    # Ordre stable pour le pipeline.
+    return [opt for opt in FRESCO_OPTIONS if opt in selected]
+
+
+def amount_cfa_for_restore_options(options: list[str] | None) -> int:
+    """Prix Fresco = 250 FCFA × nombre d'options choisies."""
+    return FRESCO_OPTION_PRICE_CFA * len(normalize_restore_options(options))
 
 
 def amount_cfa_for_image_size(width: int, height: int) -> int:
-    """Prix Fresco linéaire selon les mégapixels, borné entre min et max FCFA."""
-    w = max(1, int(width))
-    h = max(1, int(height))
-    mp = (w * h) / 1_000_000.0
-    span_mp = max(1e-6, ECLAT_MP_MAX - ECLAT_MP_MIN)
-    t = (mp - ECLAT_MP_MIN) / span_mp
-    t = max(0.0, min(1.0, t))
-    amount = round(ECLAT_PRICE_MIN_CFA + t * (ECLAT_PRICE_MAX_CFA - ECLAT_PRICE_MIN_CFA))
-    return max(ECLAT_PRICE_MIN_CFA, min(ECLAT_PRICE_MAX_CFA, amount))
+    """Legacy : une option par défaut (déchirures) — 250 FCFA."""
+    _ = (width, height)
+    return amount_cfa_for_restore_options(list(FRESCO_DEFAULT_OPTIONS))
 
 # Traitement par lots (pages max par passe Cursor + PDF partiel).
 BATCH_PAGE_SIZE = int(os.getenv("BATCH_PAGE_SIZE", "5"))

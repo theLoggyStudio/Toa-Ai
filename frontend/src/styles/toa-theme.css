@@ -526,6 +526,80 @@ body:has(.modal.show) {
   border: 2px solid var(--toa-border);
 }
 
+.toa-fresco-options {
+  border: 2px solid var(--toa-border);
+  padding: 0.85rem 1rem 1rem;
+  margin: 0;
+  background: var(--toa-taupe-dark);
+}
+
+.toa-fresco-options__legend {
+  float: none;
+  width: auto;
+  padding: 0 0.35rem;
+  margin-bottom: 0.65rem;
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--toa-brown);
+}
+
+.toa-fresco-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.65rem;
+  padding: 0.55rem 0.4rem;
+  margin-bottom: 0.35rem;
+  border: 2px solid transparent;
+  cursor: pointer;
+}
+
+.toa-fresco-option.is-checked {
+  border-color: var(--toa-sakura-deep);
+  background: rgba(91, 143, 212, 0.12);
+}
+
+.toa-fresco-option input {
+  margin-top: 0.2rem;
+  accent-color: var(--toa-sakura-deep);
+}
+
+.toa-fresco-option__body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  min-width: 0;
+}
+
+.toa-fresco-option__label {
+  font-weight: 600;
+  color: var(--toa-brown);
+  font-size: 0.95rem;
+}
+
+.toa-fresco-option__hint {
+  font-size: 0.8rem;
+  color: var(--toa-text-muted);
+}
+
+.toa-fresco-option__price {
+  font-size: 0.85rem;
+  font-weight: 700;
+  white-space: nowrap;
+  color: var(--toa-brown);
+}
+
+.toa-fresco-options__total {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-top: 0.75rem;
+  padding-top: 0.65rem;
+  border-top: 2px solid var(--toa-border);
+  font-size: 1rem;
+  color: var(--toa-brown);
+}
+
 .toa-fresco-compare__img {
   width: 100%;
   aspect-ratio: 1;

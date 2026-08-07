@@ -8,6 +8,7 @@ TaskStatus = Literal[
     "pending_payment", "paid", "processing", "completed", "failed"
 ]
 TaskKind = Literal["translate", "restore"]
+RestoreOption = Literal["tears", "color", "hd"]
 
 
 class BoundingBox(BaseModel):
@@ -37,6 +38,7 @@ class TranslationTask(BaseModel):
     kind: TaskKind = "translate"
     imageWidth: Optional[int] = None
     imageHeight: Optional[int] = None
+    restoreOptions: list[RestoreOption] = Field(default_factory=list)
     restoredImageUrl: Optional[str] = None
     # exclude=True : jamais sérialisé vers le client (sert à vérifier le webhook).
     payduniaToken: Optional[str] = Field(default=None, exclude=True)
@@ -52,7 +54,8 @@ class AppConfigResponse(BaseModel):
     priceBaseCFA: int
     pricePerBubbleCFA: int
     eclatPriceMinCFA: int = 250
-    eclatPriceMaxCFA: int = 1000
+    eclatPriceMaxCFA: int = 750
+    frescoOptionPriceCFA: int = 250
 
 
 class UploadResponse(BaseModel):

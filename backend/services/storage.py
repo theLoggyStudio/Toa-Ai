@@ -44,6 +44,7 @@ def _task_from_raw(raw: dict) -> TranslationTask:
         kind=raw.get("kind") or "translate",
         imageWidth=raw.get("imageWidth"),
         imageHeight=raw.get("imageHeight"),
+        restoreOptions=list(raw.get("restoreOptions") or []),
         restoredImageUrl=raw.get("restoredImageUrl"),
         payduniaToken=raw.get("payduniaToken"),
         pdfUrl=raw.get("pdfUrl"),
@@ -64,6 +65,7 @@ def create_task(
     kind: str = "translate",
     image_width: int | None = None,
     image_height: int | None = None,
+    restore_options: list[str] | None = None,
 ) -> TranslationTask:
     task_id = str(uuid.uuid4())
     task = TranslationTask(
@@ -78,6 +80,7 @@ def create_task(
         kind=kind,  # type: ignore[arg-type]
         imageWidth=image_width,
         imageHeight=image_height,
+        restoreOptions=list(restore_options or []),  # type: ignore[arg-type]
     )
     with _TASKS_LOCK:
         tasks = _load_tasks()

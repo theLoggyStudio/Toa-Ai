@@ -20,12 +20,14 @@ from config import (
     DISABLE_PAYMENT,
     ECLAT_PRICE_MAX_CFA,
     ECLAT_PRICE_MIN_CFA,
+    FRESCO_OPTION_PRICE_CFA,
     OUTPUT_DIR,
     PRICE_BASE_CFA,
     PRICE_PER_BUBBLE_CFA,
     amount_cfa_for_bubbles,
-    amount_cfa_for_image_size,
+    amount_cfa_for_restore_options,
     estimate_bubbles_for_pages,
+    normalize_restore_options,
 )
 from languages import SUPPORTED_TARGET_CODES
 from models import (
@@ -92,7 +94,9 @@ def _run_restore_pipeline(task_id: str) -> None:
             return
         src = sources[0]
         out = OUTPUT_DIR / f"{task_id}_restored.png"
-        restore_photo(src, out)
+        task = get_task(task_id)
+        options = list(getattr(task, "restoreOptions", None) or []) if task else []
+        restore_photo(src, out, options=options)
         update_task(
             task_id,
             status="completed",
@@ -183,6 +187,7 @@ async def app_config():
         pricePerBubbleCFA=PRICE_PER_BUBBLE_CFA,
         eclatPriceMinCFA=ECLAT_PRICE_MIN_CFA,
         eclatPriceMaxCFA=ECLAT_PRICE_MAX_CFA,
+        frescoOptionPriceCFA=FRESCO_OPTION_PRICE_CFA,
     )
 
 
@@ -309,8 +314,11 @@ async def start_processing(task_id: str, background_tasks: BackgroundTasks):
 
 
 @router.post("/restore/upload", response_model=UploadResponse)
-async def upload_restore(image: UploadFile = File(...)):
-    """Fresco : une image → estimation prix selon les mégapixels (250–1000 FCFA)."""
+async def upload_restore(
+    image: UploadFile = File(...),
+    options: List[str] | None = Form(default=None),
+):
+    """Fresco : une image + options (tears/color/hd) → 250 FCFA × option."""
     suffix = (Path(image.filename or "photo.png").suffix or ".png").lower()
     if suffix not in {".png", ".jpg", ".jpeg"}:
         raise HTTPException(400, "Format non supporté. Utilisez PNG, JPG ou JPEG.")
@@ -324,14 +332,18 @@ async def upload_restore(image: UploadFile = File(...)):
     if not _is_real_image(data):
         raise HTTPException(400, "Le contenu n'est pas une image PNG ou JPEG.")
 
+    selected = normalize_restore_options(options or [])
+    amount = amount_cfa_for_restore_options(selected)
+
     task = create_task(
         1,
         "auto",
         "fr",
-        amount_cfa=0,
+        amount_cfa=amount,
         billable_bubbles_count=0,
         include_toa=False,
         kind="restore",
+        restore_options=selected,
     )
     upload_dir = get_upload_dir(task.id)
     _clear_upload_dir(upload_dir)
@@ -343,7 +355,6 @@ async def upload_restore(image: UploadFile = File(...)):
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 
-    amount = amount_cfa_for_image_size(width, height)
     update_task(
         task.id,
         originalImagesCount=1,
@@ -351,10 +362,34 @@ async def upload_restore(image: UploadFile = File(...)):
         imageWidth=width,
         imageHeight=height,
         kind="restore",
+        restoreOptions=selected,
     )
     task = get_task(task.id) or task
     return UploadResponse(
         task=task,
+        checkoutReady=not DISABLE_PAYMENT,
+        paymentDisabled=DISABLE_PAYMENT,
+    )
+
+
+@router.post("/restore/{task_id}/options", response_model=UploadResponse)
+async def update_restore_options(
+    task_id: str,
+    options: List[str] | None = Form(default=None),
+):
+    """Met à jour les options Fresco et le montant tant que le paiement n'est pas fait."""
+    task = get_task(task_id)
+    if not task or task.kind != "restore":
+        raise HTTPException(404, "Tâche Fresco introuvable.")
+    if task.status != "pending_payment":
+        raise HTTPException(400, "Les options ne peuvent plus être modifiées.")
+
+    selected = normalize_restore_options(options or [])
+    amount = amount_cfa_for_restore_options(selected)
+    update_task(task_id, restoreOptions=selected, amountCFA=amount)
+    updated = get_task(task_id) or task
+    return UploadResponse(
+        task=updated,
         checkoutReady=not DISABLE_PAYMENT,
         paymentDisabled=DISABLE_PAYMENT,
     )

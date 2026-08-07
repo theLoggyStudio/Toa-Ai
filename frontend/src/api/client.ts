@@ -214,9 +214,15 @@ export function getPartialPdfDownloadUrl(taskId: string): string {
   return `${API_BASE}/api/tasks/${taskId}/pdf/partial?_=${Date.now()}`;
 }
 
-export async function uploadRestoreImage(file: File): Promise<UploadResponse> {
+export async function uploadRestoreImage(
+  file: File,
+  options: string[] = ['tears'],
+): Promise<UploadResponse> {
   const formData = new FormData();
   formData.append('image', file);
+  for (const opt of options) {
+    formData.append('options', opt);
+  }
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), UPLOAD_TIMEOUT_MS);
@@ -241,6 +247,22 @@ export async function uploadRestoreImage(file: File): Promise<UploadResponse> {
   } finally {
     clearTimeout(timeoutId);
   }
+  return handleResponse<UploadResponse>(response);
+}
+
+export async function updateRestoreOptions(
+  taskId: string,
+  options: string[],
+): Promise<UploadResponse> {
+  const formData = new FormData();
+  for (const opt of options) {
+    formData.append('options', opt);
+  }
+  const response = await fetch(`${API_BASE}/api/restore/${taskId}/options`, {
+    method: 'POST',
+    body: formData,
+    cache: 'no-store',
+  });
   return handleResponse<UploadResponse>(response);
 }
 

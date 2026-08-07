@@ -1,14 +1,15 @@
 """Tests du calcul de tarification."""
 
 from config import (
-    ECLAT_PRICE_MAX_CFA,
-    ECLAT_PRICE_MIN_CFA,
     ESTIMATED_BUBBLES_PER_PAGE,
+    FRESCO_OPTION_PRICE_CFA,
     PRICE_BASE_CFA,
     PRICE_PER_BUBBLE_CFA,
     amount_cfa_for_bubbles,
     amount_cfa_for_image_size,
+    amount_cfa_for_restore_options,
     estimate_bubbles_for_pages,
+    normalize_restore_options,
 )
 
 
@@ -30,17 +31,30 @@ def test_estimate_bubbles_for_pages():
     assert estimate_bubbles_for_pages(0) == 1
 
 
-def test_eclat_amount_clamped_min():
-    # Très petite image → prix minimum
-    assert amount_cfa_for_image_size(100, 100) == ECLAT_PRICE_MIN_CFA
+def test_fresco_default_option_is_tears():
+    assert normalize_restore_options([]) == ["tears"]
+    assert normalize_restore_options(None) == ["tears"]
 
 
-def test_eclat_amount_clamped_max():
-    # Grande image (≥ 12 MP) → prix maximum
-    assert amount_cfa_for_image_size(4000, 4000) == ECLAT_PRICE_MAX_CFA
+def test_fresco_amount_per_option():
+    assert amount_cfa_for_restore_options(["tears"]) == FRESCO_OPTION_PRICE_CFA
+    assert (
+        amount_cfa_for_restore_options(["tears", "color"])
+        == 2 * FRESCO_OPTION_PRICE_CFA
+    )
+    assert (
+        amount_cfa_for_restore_options(["tears", "color", "hd"])
+        == 3 * FRESCO_OPTION_PRICE_CFA
+    )
 
 
-def test_eclat_amount_mid_range():
-    # ~6.15 MP (entre 0.3 et 12) → entre min et max
-    amount = amount_cfa_for_image_size(2500, 2500)
-    assert ECLAT_PRICE_MIN_CFA < amount < ECLAT_PRICE_MAX_CFA
+def test_fresco_ignores_unknown_and_dedupes():
+    assert normalize_restore_options(["hd", "hd", "nope", "color"]) == [
+        "color",
+        "hd",
+    ]
+
+
+def test_eclat_legacy_amount_is_one_option():
+    assert amount_cfa_for_image_size(100, 100) == FRESCO_OPTION_PRICE_CFA
+    assert amount_cfa_for_image_size(4000, 4000) == FRESCO_OPTION_PRICE_CFA

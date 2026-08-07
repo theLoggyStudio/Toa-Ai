@@ -13,6 +13,7 @@ export type TaskStatus =
   | 'failed';
 
 export type TaskKind = 'translate' | 'restore';
+export type RestoreOption = 'tears' | 'color' | 'hd';
 
 export interface TranslationTask {
   id: string;
@@ -26,6 +27,7 @@ export interface TranslationTask {
   kind?: TaskKind;
   imageWidth?: number;
   imageHeight?: number;
+  restoreOptions?: RestoreOption[];
   restoredImageUrl?: string;
   pdfUrl?: string;
   partialPdfUrl?: string;
@@ -52,6 +54,7 @@ export interface AppConfig {
   pricePerBubbleCFA: number;
   eclatPriceMinCFA?: number;
   eclatPriceMaxCFA?: number;
+  frescoOptionPriceCFA?: number;
 }
 
 export interface UploadResponse {

@@ -262,41 +262,6 @@ body:has(.modal.show) {
   opacity: 0.9;
 }
 
-/* Fresco : fondu dither en bleu nuit pour coller à la bannière. */
-.toa-hero-full--fresco {
-  --toa-fresco-night: #0a1628;
-}
-
-.toa-hero-full--fresco .toa-hero-full__dither--bottom {
-  background-color: var(--toa-fresco-night);
-  background-image:
-    repeating-linear-gradient(
-      0deg,
-      var(--toa-fresco-night) 0,
-      var(--toa-fresco-night) 8px,
-      transparent 8px,
-      transparent 16px
-    ),
-    repeating-linear-gradient(
-      90deg,
-      var(--toa-fresco-night) 0,
-      var(--toa-fresco-night) 8px,
-      transparent 8px,
-      transparent 16px
-    );
-}
-
-.toa-hero-full--fresco .toa-hero-full__dither--sides {
-  background-image:
-    repeating-linear-gradient(
-      90deg,
-      var(--toa-fresco-night) 0,
-      var(--toa-fresco-night) 8px,
-      transparent 8px,
-      transparent 16px
-    );
-}
-
 .toa-footer-bar {
   width: 100%;
   background: var(--toa-navbar);

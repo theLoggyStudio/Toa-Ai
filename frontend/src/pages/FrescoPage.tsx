@@ -273,7 +273,7 @@ export function FrescoPage() {
       : null;
 
   return (
-    <div className="toa-page">
+    <div className="toa-page toa-page--fresco">
       <HeroBanner product="fresco" />
 
       <main className="container pb-4" style={{ maxWidth: 760 }}>

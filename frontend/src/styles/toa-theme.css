@@ -581,3 +581,145 @@ body:has(.modal.show) {
   text-align: center;
   padding: 0.5rem;
 }
+
+/* ——— Fresco : palette bleu nuit (nav, carte, fond) ——— */
+body[data-product="fresco"],
+.toa-page--fresco {
+  --toa-taupe: #8fa4c0;
+  --toa-taupe-dark: #243f5c;
+  --toa-brown: #dce6f5;
+  --toa-brown-deep: #050b14;
+  --toa-navbar: #0c1a2e;
+  --toa-sakura: #5b8fd4;
+  --toa-sakura-deep: #3d6a9e;
+  --toa-cream: #e8eef8;
+  --toa-bg: #12263f;
+  --toa-bg-deep: #0a1628;
+  --toa-bg-card: #152a45;
+  --toa-text: #e8eef8;
+  --toa-text-on-dark: #e8eef8;
+  --toa-text-muted: #9bb0cc;
+  --toa-border: #4a6a8f;
+  --toa-shadow: 4px 4px 0 #050b14;
+  --toa-shadow-sm: 2px 2px 0 #050b14;
+}
+
+body[data-product="fresco"] {
+  background-color: var(--toa-bg-deep);
+  background-image:
+    linear-gradient(90deg, rgba(74, 106, 143, 0.22) 1px, transparent 1px),
+    linear-gradient(rgba(74, 106, 143, 0.22) 1px, transparent 1px);
+  color: var(--toa-text-on-dark);
+}
+
+.toa-page--fresco .toa-product-nav__link {
+  background: #1a3350;
+  color: #dce6f5;
+  border-color: #4a6a8f;
+}
+
+.toa-page--fresco .toa-product-nav__link:hover,
+.toa-page--fresco .toa-product-nav__link.is-active {
+  background: #3d6a9e;
+  color: #f0f5ff;
+  border-color: #7eb0e0;
+}
+
+.toa-page--fresco .toa-card {
+  background: #152a45;
+  border-color: #4a6a8f;
+  color: #e8eef8;
+  box-shadow: 4px 4px 0 #050b14;
+}
+
+.toa-page--fresco .toa-card h1,
+.toa-page--fresco .toa-card h5,
+.toa-page--fresco .toa-card .form-label {
+  color: #f0f5ff;
+}
+
+.toa-page--fresco .toa-dropzone {
+  background: #0f1f35 !important;
+  border-color: #4a6a8f !important;
+  color: #9bb0cc;
+}
+
+.toa-page--fresco .toa-dropzone:hover:not(.disabled),
+.toa-page--fresco .toa-dropzone-active {
+  border-color: #7eb0e0 !important;
+  background: #1a3350 !important;
+  color: #e8eef8;
+}
+
+.toa-page--fresco .toa-btn-primary {
+  background: #5b8fd4;
+  color: #050b14;
+  border-color: #7eb0e0;
+}
+
+.toa-page--fresco .toa-btn-primary:hover:not(:disabled) {
+  background: #3d6a9e;
+  color: #f0f5ff;
+  border-color: #a8c8ef;
+}
+
+.toa-page--fresco .toa-btn-outline {
+  background: #0f1f35;
+  color: #dce6f5;
+  border-color: #4a6a8f;
+}
+
+.toa-page--fresco .toa-btn-outline:hover:not(:disabled) {
+  background: #243f5c;
+  color: #f0f5ff;
+}
+
+.toa-page--fresco .toa-btn-success {
+  background: #3d8f7a;
+  color: #e8fff8;
+  border-color: #5bb89e;
+}
+
+.toa-page--fresco .toa-btn-success:hover:not(:disabled) {
+  background: #2d6f5f;
+  color: #f0f5ff;
+}
+
+.toa-page--fresco .toa-fresco-price {
+  background: #0f1f35;
+  border-color: #4a6a8f;
+  color: #e8eef8;
+}
+
+.toa-page--fresco .toa-fresco-compare__img {
+  border-color: #4a6a8f;
+  background: #0f1f35;
+}
+
+.toa-page--fresco .toa-fresco-compare__placeholder {
+  border-color: #4a6a8f;
+  color: #9bb0cc;
+  background: #0f1f35;
+}
+
+.toa-page--fresco .toa-badge-test {
+  background: #5b8fd4 !important;
+  color: #050b14 !important;
+  border-color: #7eb0e0;
+}
+
+.toa-page--fresco .toa-alert-danger {
+  background: #3a1f2e;
+  border-color: #a05070;
+  color: #f5d0dc;
+}
+
+.toa-page--fresco .toa-footer-bar {
+  background: #0c1a2e;
+  border-top-color: #050b14;
+}
+
+.toa-page--fresco .toa-meta,
+.toa-page--fresco .toa-text-muted {
+  color: #9bb0cc !important;
+}

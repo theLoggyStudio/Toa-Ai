@@ -1,18 +1,28 @@
 import { Link } from 'react-router-dom';
 import logoImg from '../assets/logo.png';
+import logoFrescoImg from '../assets/icon-fresco.png';
 
 type Props = {
   tagline?: string;
+  product?: 'translate' | 'fresco';
 };
 
-export function Footer({ tagline = 'Traduction manga & manhwa' }: Props) {
+export function Footer({
+  tagline = 'Traduction manga & manhwa',
+  product = 'translate',
+}: Props) {
+  const isFresco = product === 'fresco';
+  const brandLogo = isFresco ? logoFrescoImg : logoImg;
+  const brandAlt = isFresco ? 'Fresco' : 'Toa AI';
+  const brandTo = isFresco ? '/fresco' : '/TOA.ai';
+
   return (
     <footer className="toa-footer-bar">
       <div className="toa-footer-bar__inner">
-        <Link to="/TOA.ai" className="toa-footer-bar__brand">
+        <Link to={brandTo} className="toa-footer-bar__brand">
           <img
-            src={logoImg}
-            alt="Toa AI"
+            src={brandLogo}
+            alt={brandAlt}
             className="toa-pixel-img toa-footer-bar__logo"
           />
         </Link>

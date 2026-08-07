@@ -426,7 +426,7 @@ export function FrescoPage() {
         </p>
       </main>
 
-      <Footer tagline="Fresco — restauration photo" />
+      <Footer product="fresco" tagline="Fresco — restauration photo" />
     </div>
   );
 }

@@ -37,7 +37,7 @@ def _patch_common(monkeypatch, *, confirm_status: str = "completed"):
     monkeypatch.setattr(
         tasks_router,
         "confirm_checkout_invoice",
-        lambda token: {"status": confirm_status},
+        lambda token, kind="translate": {"status": confirm_status},
     )
     monkeypatch.setattr(
         tasks_router,

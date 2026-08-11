@@ -6,8 +6,8 @@ services:
     runtime: python
     plan: free
     rootDir: backend
-    # Chromium pour le rendu bulles HTML (Playwright). Disque éphémère en free.
-    buildCommand: pip install -r requirements.txt && playwright install --with-deps chromium
+    # Plan free (512 Mo) : pas d’install Chromium Playwright (trop lourd).
+    buildCommand: pip install -r requirements.txt
     startCommand: python run_prod.py
     healthCheckPath: /api/config
     envVars:

@@ -1,8 +1,9 @@
 # Déploiement backend sur Render (gratuit)
 
-## URL attendue
-Après le premier deploy : `https://toa-ai-api.onrender.com`  
-(à confirmer dans le dashboard Render)
+## URL live
+- API : [https://toa-ai-api.onrender.com](https://toa-ai-api.onrender.com)
+- Health : [https://toa-ai-api.onrender.com/api/config](https://toa-ai-api.onrender.com/api/config)
+- Dashboard : [Render web service](https://dashboard.render.com/web/srv-d9tl58942hec738gr4ng)
 
 ## Créer le service
 1. Compte sur [render.com](https://dashboard.render.com)

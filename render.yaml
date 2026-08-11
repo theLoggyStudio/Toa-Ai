@@ -1,0 +1,60 @@
+# Blueprint Render — backend FastAPI Toa AI (plan free)
+# https://render.com/docs/blueprint-spec
+services:
+  - type: web
+    name: toa-ai-api
+    runtime: python
+    plan: free
+    rootDir: backend
+    # Chromium pour le rendu bulles HTML (Playwright). Disque éphémère en free.
+    buildCommand: pip install -r requirements.txt && playwright install --with-deps chromium
+    startCommand: python run_prod.py
+    healthCheckPath: /api/config
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.11"
+      - key: FRONTEND_ORIGIN
+        value: https://toa-ai.vercel.app
+      - key: FRONTEND_PORT
+        value: "3100"
+      - key: DISABLE_PAYMENT
+        value: "false"
+      - key: PAYDUNYA_MODE
+        value: test
+      - key: PAYDUNYA_FRESCO_MODE
+        value: test
+      - key: PRICE_BASE_CFA
+        value: "200"
+      - key: PRICE_PER_BUBBLE_CFA
+        value: "25"
+      - key: FRESCO_OPTION_PRICE_CFA
+        value: "250"
+      - key: CURSOR_MODEL
+        value: auto
+      - key: CURSOR_USE_CLOUD
+        value: "true"
+      - key: CURSOR_WORKSPACE_DIR
+        value: .
+      - key: CHIBIE_ENABLED
+        value: "false"
+      - key: PIPELINE_PAGE_CONCURRENCY
+        value: "3"
+      # Secrets / URL publique : à définir dans le dashboard Render (ou sync)
+      - key: BACKEND_PUBLIC_URL
+        sync: false
+      - key: CURSOR_API_KEY
+        sync: false
+      - key: PAYDUNYA_MASTER_KEY
+        sync: false
+      - key: PAYDUNYA_TEST_PUBLIC_KEY
+        sync: false
+      - key: PAYDUNYA_TEST_PRIVATE_KEY
+        sync: false
+      - key: PAYDUNYA_TEST_TOKEN
+        sync: false
+      - key: PAYDUNYA_PROD_PUBLIC_KEY
+        sync: false
+      - key: PAYDUNYA_PROD_PRIVATE_KEY
+        sync: false
+      - key: PAYDUNYA_PROD_TOKEN
+        sync: false

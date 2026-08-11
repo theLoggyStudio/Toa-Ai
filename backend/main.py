@@ -35,6 +35,7 @@ origins = list(
     dict.fromkeys(
         [
             FRONTEND_ORIGIN.rstrip("/"),
+            "https://toa-ai.vercel.app",
             f"http://localhost:{FRONTEND_PORT}",
             f"http://127.0.0.1:{FRONTEND_PORT}",
         ]
@@ -43,9 +44,12 @@ origins = list(
 
 app.add_middleware(
     CORSMiddleware,
-    # Vite peut basculer sur 5174+ si 5173 est occupé — autoriser tout port local.
+    # Local Vite + previews Vercel (*.vercel.app).
     allow_origins=origins,
-    allow_origin_regex=r"http://(localhost|127\.0\.0\.1):\d+",
+    allow_origin_regex=(
+        r"http://(localhost|127\.0\.0\.1):\d+"
+        r"|https://([a-z0-9-]+\.)?vercel\.app"
+    ),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

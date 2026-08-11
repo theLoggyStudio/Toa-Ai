@@ -160,7 +160,8 @@ def paydunya_credentials_for_mode(mode: str) -> tuple[str, str, str]:
     )
 
 FRONTEND_PORT = int(os.getenv("FRONTEND_PORT", "3100"))
-BACKEND_PORT = int(os.getenv("BACKEND_PORT", "9400"))
+# Render injecte PORT ; en local on garde BACKEND_PORT (9400).
+BACKEND_PORT = int(os.getenv("PORT") or os.getenv("BACKEND_PORT", "9400"))
 FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", f"http://localhost:{FRONTEND_PORT}")
 BACKEND_PUBLIC_URL = os.getenv(
     "BACKEND_PUBLIC_URL", f"http://127.0.0.1:{BACKEND_PORT}"
